@@ -1,3 +1,9 @@
+# Copyright 2020 Paolo Galeone <nessuno@nerdz.eu>. All Rights Reserved.
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 """Classes and utilities to use video streams."""
 
 from threading import Lock, Thread
@@ -86,3 +92,43 @@ class WebcamVideoStream:
     def __del__(self):
         """On object destruction, release the videostream."""
         self.stream.release()
+
+
+class Tracker:
+    """Tracks one object. It uses the MOSSE tracker."""
+
+    def __init__(self, frame, bounding_box, max_failures=10, name="face") -> None:
+        """Initialize the frame tracker: start tracking the object
+        localized into the bounding box in the current frame.
+        Args:
+            frame: BGR input image
+            bounding_box: the bounding box containing the object to track
+            max_failures: the number of frame to skip, before raising an
+                          exception during the "track" call.
+            name: an identifier for the object to track
+        Returns:
+            None
+        """
+        self._name = name
+        self._tracker = cv2.TrackerMOSSE_create()
+        self._tracker.init(frame, bounding_box)
+        self._max_failures = max_failures
+        self._failures = 0
+
+    def track(self, frame):
+        """Track the object (selected during the init), in the current frame.
+        If the number of attempts of tracking exceed the value of max_failures
+        (selected during the init), this function throws a ValueError exception.
+        Args:
+            frame: BGR input image
+        """
+        success, bounding_box = self._tracker.update(frame)
+        if success:
+            self._failures = 0
+        else:
+            self._failures += 1
+            if self._failures >= self._max_failures:
+                self._failures = 0
+                raise ValueError(
+                    f"Can't find {self._name} for {self._max_failures} times"
+                )

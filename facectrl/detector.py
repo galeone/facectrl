@@ -1,3 +1,9 @@
+# Copyright 2020 Paolo Galeone <nessuno@nerdz.eu>. All Rights Reserved.
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 """Classes and utilities to detect faces into images."""
 
 from pathlib import Path

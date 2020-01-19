@@ -40,18 +40,24 @@ def get_model():
     return model
 
 
-def _train(dataset: tf.data.Dataset, logdir: Path):
+def _define_or_restore(logdir: Path):
     reconstruction_error = ClassifierLoss(tf.keras.losses.MeanSquaredError())
     autoencoder = get_model()
 
-    ClassifierTrainer(
+    trainer = ClassifierTrainer(
         model=autoencoder,
         optimizer=tf.optimizers.Adam(1e-4),
         loss=reconstruction_error,
         metrics=[ashpy.metrics.ClassifierLoss(model_selection_operator=operator.lt)],
         logdir=str(logdir),
-        epochs=100,
-    )(dataset, dataset)
+        epochs=250,
+    )
+    return trainer, autoencoder
+
+
+def _train(dataset: tf.data.Dataset, logdir: Path):
+    trainer, _ = _define_or_restore(logdir)
+    trainer(dataset, dataset)
 
 
 def train(dataset_path: Path, logdir: Path):
@@ -91,13 +97,11 @@ def train(dataset_path: Path, logdir: Path):
     # Keep the best model checkpoints and export them as SavedModels
     for key in ["on", "off"]:
         # Use the trainer to correctly restore the parameters of the best model
-        autoencoder = get_model()
         best_path = logdir / key / "best" / "loss"
-        ClassifierTrainer(
-            model=autoencoder, logdir=tf.train.latest_checkpoint(str(best_path)),
-        )
+        _, autoencoder = _define_or_restore(best_path)
+
         dest_path = logdir / key / "saved"
-        model.save(str(dest_path))
+        autoencoder.save(str(dest_path))
         copyfile(best_path / "loss.json", dest_path / "loss.json")
 
 

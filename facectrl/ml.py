@@ -14,8 +14,9 @@ from argparse import ArgumentParser
 from pathlib import Path
 from shutil import copyfile
 
-import ashpy
 import tensorflow as tf
+
+import ashpy
 from ashpy.losses.classifier import ClassifierLoss
 from ashpy.models.convolutional.autoencoders import Autoencoder
 from ashpy.trainers.classifier import ClassifierTrainer
@@ -27,9 +28,9 @@ def get_model():
         (64, 64),
         (4, 4),
         kernel_size=3,
-        initial_filters=16,
-        filters_cap=64,
-        encoding_dimension=50,
+        initial_filters=8,
+        filters_cap=16,
+        encoding_dimension=20,
         channels=3,
     )
 
@@ -50,7 +51,7 @@ def _define_or_restore(logdir: Path):
         loss=reconstruction_error,
         metrics=[ashpy.metrics.ClassifierLoss(model_selection_operator=operator.lt)],
         logdir=str(logdir),
-        epochs=250,
+        epochs=100,
     )
     return trainer, autoencoder
 

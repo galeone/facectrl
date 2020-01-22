@@ -3,3 +3,4 @@ opencv-python
 opencv-contrib-python
 pygobject
 ashpy
+better-setuptools-git-version

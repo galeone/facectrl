@@ -6,6 +6,8 @@
 
 """Facectrl: control your mediaplayer with your face."""
 
+import re
+
 from setuptools import find_packages, setup
 
 if __name__ == "__main__":
@@ -15,9 +17,13 @@ if __name__ == "__main__":
     with open("requirements.txt") as FP:
         REQUIREMENTS = FP.read().splitlines()
 
+    # Meta
+    INIT_PY = open("facectrl/__init__.py").read()
+    METADATA = dict(re.findall(r"__([a-z]+)__ = \"([^\"]+)\"", INIT_PY))
+
     setup(
-        author="Paolo Galeone",
-        author_email="nessuno@nerdz.eu",
+        author=METADATA["author"],
+        author_email=METADATA["email"],
         description="facectrl: control your mediaplayer with your face.",
         install_requires=REQUIREMENTS,
         license="Mozilla Public License Version 2.0",
@@ -28,7 +34,7 @@ if __name__ == "__main__":
         packages=find_packages(),
         setup_requires=["better-setuptools-git-version"],
         tests_require=REQUIREMENTS,
-        url="https://github.com/galeone/facectrl",
+        url=METADATA["url"],
         version_config={
             "version_format": "{tag}.dev{sha}",
             "starting_version": "0.0.1",

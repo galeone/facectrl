@@ -65,7 +65,7 @@ class FaceDetector:
                 if area > bigger_area:
                     bigger_id = idx
                     bigger_area = area
-            return proposals[bigger_id]  # (x,y,w,h)
+            return tuple(proposals[bigger_id])  # (x,y,w,h)
         return (0, 0, 0, 0)
 
     @staticmethod

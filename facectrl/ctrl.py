@@ -6,7 +6,7 @@
 
 """Classes and executable module to control the player with your face."""
 
-import json
+import logging
 import os
 import sys
 import time
@@ -15,6 +15,7 @@ from pathlib import Path
 
 import cv2
 import gi
+import numpy as np
 import tensorflow as tf
 
 from facectrl.detector import FaceDetector
@@ -23,7 +24,12 @@ from facectrl.video import Tracker, WebcamVideoStream
 
 class Controller:
     def __init__(
-        self, player, stream: WebcamVideoStream, detector: FaceDetector, logdir: Path,
+        self,
+        player,
+        stream: WebcamVideoStream,
+        detector: FaceDetector,
+        logdir: Path,
+        debug: bool,
     ):
         """The controller, that controles the player using the models."""
         self._player = player
@@ -33,23 +39,19 @@ class Controller:
             "on": tf.keras.models.load_model(str(logdir / "on" / "saved")),
             "off": tf.keras.models.load_model(str(logdir / "off" / "saved")),
         }
-        self._thresh = {
-            "on": float(
-                json.load(open(str(logdir / "on" / "saved" / "loss.json")))["loss"]
-            ),
-            "off": float(
-                json.load(open(str(logdir / "off" / "saved" / "loss.json")))["loss"]
-            ),
-        }
+        self._thresh = {"on": 0.5, "off": 0.5}
         self._mse = tf.keras.losses.MeanSquaredError()
-
+        self._debug = debug
         self._playing = False
+        self._fps = self._stream.fps
 
         def _play(player, status):
+            print("Setting to True")
             self._playing = True
 
         def _pause(player, status):
-            self._playing = True
+            print("Setting to False")
+            self._playing = False
 
         self._player.connect("playback-status::playing", _play)
         self._player.connect("playback-status::paused", _pause)
@@ -59,13 +61,13 @@ class Controller:
             while True:
                 found = False
                 # find the face for the first time in this loop
-                print("Detecting a face...")
+                logging.info("Detecting a face...")
                 while not found:
                     frame = self._stream.read()
                     bounding_box = self._detector.detect(frame)
                     if bounding_box[-1] != 0:
                         found = True
-                        print("Face found!")
+                        logging.info("Face found!")
 
                 # extract the face and classify it
                 face = tf.expand_dims(
@@ -82,32 +84,36 @@ class Controller:
                 classified = False
                 for key in ["on", "off"]:
                     mse = self._mse(face, self._models[key](face))
-                    print("mse: ", mse.numpy())
+                    logging.info("mse: %s" % mse.numpy())
                     if mse <= self._thresh[key]:
                         classified = key
                         break
 
                 if classified:
-                    print("Classified as: ", classified, " with mse: ", mse)
-                    tracker = Tracker(frame, bounding_box)
+                    logging.info("Classified as: %s with mse %f" % (classified, mse))
+                    tracker = Tracker(
+                        frame, bounding_box, max_failures=self._fps, debug=self._debug,
+                    )
+
                     try:
                         if classified == "on" and not self._playing:
-                            player.play()
+                            self._player.play()
                         if classified == "off" and self._playing:
-                            player.pause()
+                            self._player.pause()
                         # Start tracking stream
                         while True:
                             frame = self._stream.read()
                             tracker.track(frame)
                     except ValueError:
                         # When the tracking fails, there is a status change
+                        logging.info("Tracking failed")
                         if classified == "on":
-                            player.pause()
+                            self._player.pause()
 
                         if classified == "off":
-                            player.play()
+                            self._player.play()
                 else:
-                    print("Unable to classify the input")
+                    logging.info("Unable to classify the input")
 
 
 def main():
@@ -115,17 +121,20 @@ def main():
     gi.require_version("Playerctl", "2.0")
     from gi.repository import Playerctl, GLib  # pylint: disable=import-outside-toplevel
 
+    logging.basicConfig(level=logging.INFO)
+
     parser = ArgumentParser()
     parser.add_argument("--player", required=True, type=str)
     parser.add_argument("--logdir", required=True, type=str)
     parser.add_argument("--classifier-params", required=True)
     parser.add_argument("--stream-source", default=0)
+    parser.add_argument("--debug", default=False, action="store_true")
     args = parser.parse_args()
 
     player = Playerctl.Player(player_name=args.player)
     stream = WebcamVideoStream(args.stream_source)
     detector = FaceDetector(Path(args.classifier_params))
-    Controller(player, stream, detector, Path(args.logdir)).start()
+    Controller(player, stream, detector, Path(args.logdir), args.debug).start()
 
     glib_loop = GLib.MainLoop()
     glib_loop.run()

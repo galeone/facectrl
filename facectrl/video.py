@@ -6,10 +6,13 @@
 
 """Classes and utilities to use video streams."""
 
+import time
 from threading import Lock, Thread
 
 import cv2
 import numpy as np
+
+from .detector import FaceDetector
 
 
 class WebcamVideoStream:
@@ -25,8 +28,8 @@ class WebcamVideoStream:
         Returns:
             None
         """
-        self.stream = cv2.VideoCapture(src)
-        (_, self._frame) = self.stream.read()
+        self._stream = cv2.VideoCapture(src)
+        (_, self._frame) = self._stream.read()
         self._grabbing = False
         self._lock = Lock()
         self._thread = None
@@ -53,17 +56,15 @@ class WebcamVideoStream:
         """Stop the acquisition stream.
         Waits for the acquistion thread to terminate.
         """
-
         self._grabbing = False
         self._thread.join()
-        # self.stream.release()
 
     def _update(self) -> None:
         """The update operation: updetes the self._frame variable.
         Thread safe.
         """
         while self._grabbing:
-            (_, frame) = self.stream.read()
+            (_, frame) = self._stream.read()
             self._lock.acquire()
             self._frame = frame
             self._lock.release()
@@ -79,6 +80,18 @@ class WebcamVideoStream:
         self._lock.release()
         return frame
 
+    @property
+    def fps(self) -> float:
+        """Return the current FPS value.
+        This method DO NOT uses cv2.CPA_PROP_FPS),
+        but it actually measures the number of FPS in a second.
+        Thus, this method requires AT LEAST one second to execute.
+        """
+        start = time.time()
+        self.read()
+        end = time.time()
+        return 1.0 / (end - start)
+
     def __enter__(self) -> "WebcamVideoStream":  # forward declaration
         """Start the WebcamVideoStream."""
         return self._start()
@@ -91,13 +104,15 @@ class WebcamVideoStream:
 
     def __del__(self):
         """On object destruction, release the videostream."""
-        self.stream.release()
+        self._stream.release()
 
 
 class Tracker:
     """Tracks one object. It uses the MOSSE tracker."""
 
-    def __init__(self, frame, bounding_box, max_failures=10, name="face") -> None:
+    def __init__(
+        self, frame, bounding_box, max_failures=10, name="face", debug: bool = False
+    ) -> None:
         """Initialize the frame tracker: start tracking the object
         localized into the bounding box in the current frame.
         Args:
@@ -106,14 +121,17 @@ class Tracker:
             max_failures: the number of frame to skip, before raising an
                           exception during the "track" call.
             name: an identifier for the object to track
+            debug: set to true to enable visual debugging (opencv window)
         Returns:
             None
         """
         self._name = name
         self._tracker = cv2.TrackerMOSSE_create()
+        self._golden_crop = FaceDetector.crop(frame, tuple(bounding_box))
         self._tracker.init(frame, bounding_box)
         self._max_failures = max_failures
         self._failures = 0
+        self._debug = debug
 
     def track(self, frame):
         """Track the object (selected during the init), in the current frame.
@@ -125,10 +143,21 @@ class Tracker:
         success, bounding_box = self._tracker.update(frame)
         if success:
             self._failures = 0
+            if self._debug:
+                bounding_box = np.array(bounding_box, dtype=np.int32)
+                cv2.rectangle(
+                    frame,
+                    tuple(bounding_box[:2]),
+                    tuple(bounding_box[:2] + bounding_box[2:]),
+                    (0, 255, 0),
+                )
+                cv2.imshow("debug", frame)
+                cv2.waitKey(1)
         else:
             self._failures += 1
             if self._failures >= self._max_failures:
-                self._failures = 0
+                if self._debug:
+                    cv2.destroyAllWindows()
                 raise ValueError(
                     f"Can't find {self._name} for {self._max_failures} times"
                 )

@@ -14,25 +14,80 @@ import sys
 from argparse import ArgumentParser
 from pathlib import Path
 from shutil import copyfile
-from typing import Callable
+from typing import Callable, Dict
 
 import tensorflow as tf
 
 import ashpy
 from ashpy.losses.classifier import ClassifierLoss
-from ashpy.models.convolutional.autoencoders import Autoencoder
 from ashpy.modes import LogEvalMode
 from ashpy.trainers.classifier import ClassifierTrainer
 
 BATCH_SIZE = 50
+EPOCHS = 1000
 
 
-class AUC(ashpy.metrics.Metric):
-    """Computes the AUC using the passed dataset."""
+class ReconstructionLoss(ashpy.metrics.Metric):
+    """Computes the LD using the passed dataset."""
 
     def __init__(
         self,
         dataset: tf.data.Dataset,
+        model_selection_operator: Callable = None,
+        logdir: str = os.path.join(os.getcwd(), "log"),
+        name: str = "ReconstructionLoss",
+    ) -> None:
+        """
+        Initialize the Metric.
+
+        Args:
+            dataset: the dataset of negatives.
+            model_selection_operator (:py:obj:`typing.Callable`): The operation that will
+                be used when `model_selection` is triggered to compare the metrics,
+                used by the `update_state`.
+                Any :py:obj:`typing.Callable` behaving like an :py:mod:`operator` is accepted.
+
+                .. note::
+                    Model selection is done ONLY if an `model_selection_operator` is specified here.
+
+            logdir (str): Path to the log dir, defaults to a `log` folder in the current
+                directory.
+        """
+        super().__init__(
+            name=name,
+            metric=tf.keras.metrics.Mean(),
+            model_selection_operator=model_selection_operator,
+            logdir=logdir,
+        )
+
+        self._mse = tf.keras.losses.MeanSquaredError()
+        self._dataset = dataset
+
+    def update_state(self, context: ashpy.contexts.ClassifierContext) -> None:
+        """
+        Update the internal state of the metric, using the information from the context object.
+
+        Args:
+            context (:py:class:`ashpy.contexts.ClassifierContext`): An AshPy Context holding
+                all the information the Metric needs.
+
+        """
+        for images, _ in self._dataset:
+            reconstructions = context.classifier_model(
+                images, training=context.log_eval_mode == LogEvalMode.TRAIN
+            )
+            self._distribute_strategy.experimental_run(
+                lambda: self._metric.update_state(self._mse(images, reconstructions))
+            )
+
+
+class LD(ashpy.metrics.Metric):
+    """Computes the LD using the passed dataset."""
+
+    def __init__(
+        self,
+        positive_dataset: tf.data.Dataset,
+        negative_dataset: tf.data.Dataset,
         model_selection_operator: Callable = None,
         logdir: str = os.path.join(os.getcwd(), "log"),
     ) -> None:
@@ -53,18 +108,24 @@ class AUC(ashpy.metrics.Metric):
                 directory.
         """
         super().__init__(
-            name="AUC",
-            metric=tf.keras.metrics.AUC(num_thresholds=100),
+            name="LD",
+            metric=tf.keras.metrics.Mean(),
             model_selection_operator=model_selection_operator,
             logdir=logdir,
         )
 
-        # this is not the loss (single scalar value)
-        # this is the MSE for each sample in the batch
-        self._mse = lambda y_true, y_pred: tf.reduce_mean(
-            tf.math.squared_difference(y_true, y_pred), axis=[1, 2, 3]
+        self._mse = tf.keras.losses.MeanSquaredError()
+        self._mean_positive_loss = ReconstructionLoss(
+            positive_dataset, logdir=logdir, name="PositiveLoss"
         )
-        self._dataset = dataset
+        self._mean_negative_loss = ReconstructionLoss(
+            negative_dataset, logdir=logdir, name="NegativeLoss"
+        )
+        self._positive_dataset = positive_dataset
+        self._negative_dataset = negative_dataset
+
+        self._positive_th = -1.0
+        self._negative_th = -1.0
 
     def update_state(self, context: ashpy.contexts.ClassifierContext) -> None:
         """
@@ -75,45 +136,78 @@ class AUC(ashpy.metrics.Metric):
                 all the information the Metric needs.
 
         """
+        self._mean_negative_loss.update_state(context)
+        self._mean_positive_loss.update_state(context)
 
-        for images, labels in self._dataset:
-            reconstructions = context.classifier_model(
-                images, training=context.log_eval_mode == LogEvalMode.TRAIN
+        self._distribute_strategy.experimental_run(
+            lambda: self._metric.update_state(
+                tf.math.abs(
+                    self._mean_negative_loss.result()
+                    - self._mean_positive_loss.result()
+                )
             )
-            scores = self._mse(images, reconstructions)
-            self._distribute_strategy.experimental_run(
-                lambda: self._metric.update_state(labels, scores)
-            )
+        )
+        self._positive_th = self._mean_positive_loss.result()
+        self._negative_th = self._mean_negative_loss.result()
+
+        self._mean_negative_loss.reset_states()
+        self._mean_positive_loss.reset_states()
+
+    def json_write(self, filename: str, what_to_write: Dict) -> None:
+        # the json_write function is called when the model selection operation is triggered
+        # in this case, it means that there is a great different between the loss value in positive
+        # and negativa values. Thus,we want to save the difference (passed in what_to_write)
+        # and also the thresholds that we saved in the self._positive_th and self._negative_th
+
+        super().json_write(
+            filename,
+            {
+                **what_to_write,
+                **{
+                    "positive_threshold": self._positive_th,
+                    "negative_threshold": self._negative_th,
+                },
+            },
+        )
 
 
 def get_model():
     """Create a new autoencoder tf.keras.Model."""
-    autoencoder = Autoencoder(
-        (64, 64),
-        (4, 4),
-        kernel_size=3,
-        initial_filters=32,
-        filters_cap=64,
-        encoding_dimension=32,
-        channels=3,
-    )
-
     # encoding, representation = autoencoder(input)
     inputs = tf.keras.layers.Input(shape=(64, 64, 3))
-    _, reconstruction = autoencoder(inputs)
-    model = tf.keras.Model(inputs=inputs, outputs=reconstruction)
+    net = tf.keras.layers.Flatten()(inputs)
+    net = tf.keras.layers.Dense(128, activation=tf.nn.sigmoid)(net)
+    net = tf.keras.layers.Dense(64, activation=tf.nn.sigmoid)(net)
+    net = tf.keras.layers.Dense(32, activation=tf.nn.sigmoid)(net)  # encoding
+    net = tf.keras.layers.Dense(64, activation=tf.nn.sigmoid)(net)
+    net = tf.keras.layers.Dense(128, activation=tf.nn.sigmoid)(net)
+    net = tf.keras.layers.Dense(64 * 64 * 3, activation=tf.nn.sigmoid)(net)
+    reconstructions = tf.keras.layers.Reshape((64, 64, 3))(net)
+
+    model = tf.keras.Model(inputs=inputs, outputs=reconstructions)
     return model
 
 
-def _define_or_restore(logdir: Path, full_dataset: tf.data.Dataset = None):
+def _define_or_restore(
+    logdir: Path,
+    positive_dataset: tf.data.Dataset = None,
+    negative_dataset: tf.data.Dataset = None,
+):
     reconstruction_error = ClassifierLoss(tf.keras.losses.MeanSquaredError())
     autoencoder = get_model()
+    autoencoder.summary()
 
     # terrible hack, refacator
     metrics = (
         []
-        if not full_dataset
-        else [AUC(full_dataset, model_selection_operator=operator.gt)]
+        if not positive_dataset
+        else [
+            LD(
+                positive_dataset, negative_dataset, model_selection_operator=operator.gt
+            ),
+            ReconstructionLoss(positive_dataset, logdir=logdir, name="PositiveLoss"),
+            ReconstructionLoss(negative_dataset, logdir=logdir, name="NegativeLoss"),
+        ]
     )
     trainer = ClassifierTrainer(
         model=autoencoder,
@@ -121,7 +215,7 @@ def _define_or_restore(logdir: Path, full_dataset: tf.data.Dataset = None):
         optimizer=tf.optimizers.Adam(1e-4),
         loss=reconstruction_error,
         logdir=str(logdir),
-        epochs=250,
+        epochs=EPOCHS,
     )
     return trainer, autoencoder
 
@@ -143,41 +237,11 @@ def _to_ashpy_format(image):
 
 
 def _train(
-    positive_dataset: tf.data.Dataset,
-    negative_dataset: tf.data.Dataset,
-    training_positive: bool,
-    logdir: Path,
+    positive_dataset: tf.data.Dataset, negative_dataset: tf.data.Dataset, logdir: Path
 ):
-    # change the dataset format: from image, image, that is OK for trianing the autoencoder
-    # to image, label that's needed to measure the AUC.
-    # Moreover, if we are training the model of positives, the 1 label must be on positives
-    # If instead, we are traiing the model of negativesl the 1 label must be on negatives
 
-    # The labels are needed only for measuring the AUC, therefore we create a separate dataset
-
-    positive_label = 1
-    negative_label = 0
-    training_dataset = positive_dataset
-    if not training_positive:
-        positive_label = 0
-        negative_label = 1
-        training_dataset = negative_dataset
-
-    positive_dataset = positive_dataset.unbatch().map(
-        lambda image, label_image: (image, positive_label)
-    )
-    negative_dataset = negative_dataset.unbatch().map(
-        lambda image, label_image: (image, negative_label)
-    )
-
-    full_dataset = (
-        positive_dataset.concatenate(negative_dataset)
-        .shuffle(buffer_size=100)
-        .batch(BATCH_SIZE)
-        .prefetch(1)
-    )
-    trainer, _ = _define_or_restore(logdir, full_dataset)
-    trainer(training_dataset, training_dataset)
+    trainer, _ = _define_or_restore(logdir, positive_dataset, negative_dataset)
+    trainer(positive_dataset, positive_dataset)
 
 
 def train(dataset_path: Path, logdir: Path):
@@ -201,24 +265,17 @@ def train(dataset_path: Path, logdir: Path):
         positive_dataset=datasets["on"],
         negative_dataset=datasets["off"],
         logdir=logdir / "on",
-        training_positive=True,
-    )
-    _train(
-        positive_dataset=datasets["on"],
-        negative_dataset=datasets["off"],
-        logdir=logdir / "off",
-        training_positive=False,
     )
 
     # Keep the best model checkpoints and export them as SavedModels
-    for key in ["on", "off"]:
-        # Use the trainer to correctly restore the parameters of the best model
-        best_path = logdir / key / "best" / "AUC"
-        _, autoencoder = _define_or_restore(best_path)
+    key = "on"
+    # Use the trainer to correctly restore the parameters of the best model
+    best_path = logdir / key / "best" / "LD"
+    _, autoencoder = _define_or_restore(best_path)
 
-        dest_path = logdir / key / "saved"
-        autoencoder.save(str(dest_path))
-        copyfile(best_path / "AUC.json", dest_path / "AUC.json")
+    dest_path = logdir / key / "saved"
+    autoencoder.save(str(dest_path))
+    copyfile(best_path / "LD.json", dest_path / "LD.json")
 
 
 def main():

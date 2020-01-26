@@ -78,7 +78,7 @@ class Builder:
                         i += 1
         cv2.destroyAllWindows()
 
-    def on(self, num_samples=50, expansion=(30, 30)):
+    def on(self, num_samples=100, expansion=(70, 70)):
         """Acquire and store the images with the headphones on.
         Args:
             num_samples: the number of samples to save before exiting.
@@ -88,7 +88,7 @@ class Builder:
         """
         return self._acquire(self._on_dir, num_samples, expansion, "ON")
 
-    def off(self, num_samples=50, expansion=(30, 30)):
+    def off(self, num_samples=100, expansion=(70, 70)):
         """Acquire and store the images with the headphones off.
         Args:
             num_samples: the number of samples to save before exiting.
@@ -105,8 +105,8 @@ def main():
     parser.add_argument("--dataset-path", required=True)
     parser.add_argument("--classifier-params", required=True)
     parser.add_argument("--stream-source", default=0)
-    parser.add_argument("--num-samples", default=50, type=int)
-    parser.add_argument("--expansion", default=30)
+    parser.add_argument("--num-samples", default=100, type=int)
+    parser.add_argument("--expansion", default=70)
 
     args = parser.parse_args()
 

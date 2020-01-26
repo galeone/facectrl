@@ -83,14 +83,8 @@ class WebcamVideoStream:
     @property
     def fps(self) -> float:
         """Return the current FPS value.
-        This method DO NOT uses cv2.CPA_PROP_FPS),
-        but it actually measures the number of FPS in a second.
-        Thus, this method requires AT LEAST one second to execute.
         """
-        start = time.time()
-        self.read()
-        end = time.time()
-        return 1.0 / (end - start)
+        return self._stream.get(cv2.CAP_PROP_FPS)
 
     def __enter__(self) -> "WebcamVideoStream":  # forward declaration
         """Start the WebcamVideoStream."""

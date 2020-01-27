@@ -12,16 +12,19 @@ import sys
 import time
 from argparse import ArgumentParser
 from pathlib import Path
-from threading import Thread
 
+import cv2
 import gi
 import tensorflow as tf
+from gi.repository import GLib, Playerctl
 
 from facectrl.detector import FaceDetector
 from facectrl.video import Tracker, WebcamVideoStream
 
 
 class Controller:
+    """Controls everything that passes on the bus and on the camera."""
+
     def __init__(
         self,
         player_name,
@@ -31,21 +34,11 @@ class Controller:
         debug: bool,
     ):
         """The controller, that controles the player using the models."""
-        gi.require_version("Playerctl", "2.0")
-        from gi.repository import (
-            Playerctl,
-            GLib,
-        )  # pylint: disable=import-outside-toplevel
-
-        player = Playerctl.Player(player_name=player_name)
-
+        self._desired_player = player_name
         self._manager = Playerctl.PlayerManager()
         self._manager.connect("name-appeared", self._on_name_appeared)
-        self._manager.connect("player-vanished", self._on_player_vanished)
-        self._player = player
-        self._player.connect("playback-status::playing", self._on_play)
-        self._player.connect("playback-status::paused", self._on_pause)
-        self._player.connect("playback-status::stopped", self._on_stop)
+        self._manager.connect("name-vanished", self._on_name_vanished)
+        self._player = None
         self._stream = stream
         self._detector = detector
         self._autoencoder = tf.keras.models.load_model(str(logdir / "on" / "saved"))
@@ -59,17 +52,24 @@ class Controller:
         self._mse = tf.keras.losses.MeanSquaredError()
         self._debug = debug
         self._playing = False
-        self._fps = self._stream.fps
         self._stop = False
 
         # Start main loop
         glib_loop = GLib.MainLoop()
         glib_loop.run()
 
-    def _on_player_vanished(self, manager, player):
+    def _on_name_vanished(self, manager, name):
         self._stop = True
 
-    def _on_name_appeared(self, manager, player):
+    def _on_name_appeared(self, manager, name):
+        if name.name != self._desired_player:
+            pass
+        self._player = Playerctl.Player.new_from_name(name)
+
+        self._player.connect("playback-status::playing", self._on_play)
+        self._player.connect("playback-status::paused", self._on_pause)
+        self._player.connect("playback-status::stopped", self._on_stop)
+
         self._manager.manage_player(self._player)
         self._start()
 
@@ -127,7 +127,10 @@ class Controller:
                 if classified:
                     logging.info("Classified as: %s with mse %f", classified, mse)
                     tracker = Tracker(
-                        frame, bounding_box, max_failures=self._fps, debug=self._debug,
+                        frame,
+                        bounding_box,
+                        max_failures=self._stream.fps,
+                        debug=self._debug,
                     )
 
                     if not self._playing and classified == "on":
@@ -138,7 +141,7 @@ class Controller:
                         self._player.pause()
                     try:
                         # Start tracking stream
-                        while True:
+                        while not self._stop:
                             frame = self._stream.read()
                             tracker.track(frame)
                     except ValueError:
@@ -147,9 +150,16 @@ class Controller:
                 else:
                     logging.info("Unable to classify the input")
 
+        # Get ready to restart
+        self._playing = False
+        self._stop = False
+        if self._debug:
+            cv2.destroyAllWindows()
+
 
 def main():
     """Main method, invoked with python -m facectrl.ctrl."""
+    gi.require_version("Playerctl", "2.0")
     logging.basicConfig(level=logging.INFO)
 
     parser = ArgumentParser()

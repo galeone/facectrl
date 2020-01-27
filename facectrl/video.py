@@ -6,7 +6,6 @@
 
 """Classes and utilities to use video streams."""
 
-import time
 from threading import Lock, Thread
 
 import cv2
@@ -28,8 +27,10 @@ class WebcamVideoStream:
         Returns:
             None
         """
-        self._stream = cv2.VideoCapture(src)
-        (_, self._frame) = self._stream.read()
+        self._src = src
+        self._frame = np.array([])
+        self._fps = 0
+        self._stream = None
         self._grabbing = False
         self._lock = Lock()
         self._thread = None
@@ -84,10 +85,15 @@ class WebcamVideoStream:
     def fps(self) -> float:
         """Return the current FPS value.
         """
-        return self._stream.get(cv2.CAP_PROP_FPS)
+        if not self._fps:
+            self._fps = self._stream.get(cv2.CAP_PROP_FPS)
+        return self._fps
 
     def __enter__(self) -> "WebcamVideoStream":  # forward declaration
-        """Start the WebcamVideoStream."""
+        """Acquire resources and start the WebcamVideoStream."""
+        self._stream = cv2.VideoCapture(self._src)
+        (_, self._frame) = self._stream.read()
+
         return self._start()
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
@@ -95,10 +101,8 @@ class WebcamVideoStream:
         and clean up the resources.
         """
         self._stop()
-
-    def __del__(self):
-        """On object destruction, release the videostream."""
-        self._stream.release()
+        if self._stream:
+            self._stream.release()
 
 
 class Tracker:

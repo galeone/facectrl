@@ -52,6 +52,7 @@ class Builder:
         """
         i = 0
         yes_no_keys = [ord("y"), ord("n")]
+        start = len(list(path.glob("*.png")))
         with self._stream:
             while i < num_samples:
                 frame = self._stream.read()
@@ -74,7 +75,7 @@ class Builder:
                         print("Accept with Y, reject with N")
                         key = cv2.waitKey(0) & 0xFF
                     if key == yes_no_keys[0]:
-                        cv2.imwrite(str(path / Path(str(i) + ".png")), crop)
+                        cv2.imwrite(str(path / Path(str(start + i) + ".png")), crop)
                         i += 1
         cv2.destroyAllWindows()
 

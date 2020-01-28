@@ -90,7 +90,7 @@ class FaceDetector:
             width += halfs[0]
         if x - halfs[0] >= 0:
             x -= halfs[0]
-        if height + halfs[0] <= frame.shape[0]:
+        if height + halfs[1] <= frame.shape[0]:
             height += halfs[1]
         if y - halfs[1] >= 0:
             y -= halfs[1]

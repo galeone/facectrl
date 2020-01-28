@@ -117,7 +117,8 @@ class Controller:
                 )
 
                 classified = False
-                mse = self._mse(face, self._autoencoder(face))
+                reconstruction = self._autoencoder(face)
+                mse = self._mse(face, reconstruction)
                 logging.info("mse: %f", mse.numpy())
                 if mse <= self._thresh["on"]:
                     classified = "on"
@@ -125,6 +126,13 @@ class Controller:
                     classified = "off"
 
                 if classified:
+                    if self._debug:
+                        cv2.imshow(
+                            "reconstruction",
+                            tf.squeeze(
+                                tf.image.convert_image_dtype(reconstruction, tf.uint8)
+                            ).numpy(),
+                        )
                     logging.info("Classified as: %s with mse %f", classified, mse)
                     tracker = Tracker(
                         frame,

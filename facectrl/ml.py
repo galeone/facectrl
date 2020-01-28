@@ -16,19 +16,19 @@ from pathlib import Path
 from shutil import copyfile
 from typing import Callable, Dict
 
-import tensorflow as tf
-
 import ashpy
+import tensorflow as tf
 from ashpy.losses.classifier import ClassifierLoss
 from ashpy.modes import LogEvalMode
+from ashpy.restorers.classifier import ClassifierRestorer
 from ashpy.trainers.classifier import ClassifierTrainer
 
-BATCH_SIZE = 50
-EPOCHS = 1000
+BATCH_SIZE = 32
+EPOCHS = 100
 
 
 class ReconstructionLoss(ashpy.metrics.Metric):
-    """Computes the LD using the passed dataset."""
+    """Computes the Reconstruction Loss (MSE) using the passed dataset."""
 
     def __init__(
         self,
@@ -82,7 +82,7 @@ class ReconstructionLoss(ashpy.metrics.Metric):
 
 
 class LD(ashpy.metrics.Metric):
-    """Computes the LD using the passed dataset."""
+    """Computes the LD (loss discrepancy) using the passed dataset."""
 
     def __init__(
         self,
@@ -95,7 +95,7 @@ class LD(ashpy.metrics.Metric):
         Initialize the Metric.
 
         Args:
-            dataset: the dataset (of opsitives and negatives) to use.
+            dataset: the dataset, of positives, to use.
             model_selection_operator (:py:obj:`typing.Callable`): The operation that will
                 be used when `model_selection` is triggered to compare the metrics,
                 used by the `update_state`.
@@ -171,16 +171,16 @@ class LD(ashpy.metrics.Metric):
         )
 
 
-def get_model():
+def get_model() -> tf.keras.Model:
     """Create a new autoencoder tf.keras.Model."""
     # encoding, representation = autoencoder(input)
     inputs = tf.keras.layers.Input(shape=(64, 64, 3))
     net = tf.keras.layers.Flatten()(inputs)
-    net = tf.keras.layers.Dense(128, activation=tf.nn.sigmoid)(net)
     net = tf.keras.layers.Dense(64, activation=tf.nn.sigmoid)(net)
-    net = tf.keras.layers.Dense(32, activation=tf.nn.sigmoid)(net)  # encoding
+    net = tf.keras.layers.Dense(32, activation=tf.nn.sigmoid)(net)
+    net = tf.keras.layers.Dense(16, activation=tf.nn.sigmoid)(net)  # encoding
+    net = tf.keras.layers.Dense(32, activation=tf.nn.sigmoid)(net)
     net = tf.keras.layers.Dense(64, activation=tf.nn.sigmoid)(net)
-    net = tf.keras.layers.Dense(128, activation=tf.nn.sigmoid)(net)
     net = tf.keras.layers.Dense(64 * 64 * 3, activation=tf.nn.sigmoid)(net)
     reconstructions = tf.keras.layers.Reshape((64, 64, 3))(net)
 
@@ -188,39 +188,7 @@ def get_model():
     return model
 
 
-def _define_or_restore(
-    logdir: Path,
-    positive_dataset: tf.data.Dataset = None,
-    negative_dataset: tf.data.Dataset = None,
-):
-    reconstruction_error = ClassifierLoss(tf.keras.losses.MeanSquaredError())
-    autoencoder = get_model()
-    autoencoder.summary()
-
-    # terrible hack, refacator
-    metrics = (
-        []
-        if not positive_dataset
-        else [
-            LD(
-                positive_dataset, negative_dataset, model_selection_operator=operator.gt
-            ),
-            ReconstructionLoss(positive_dataset, logdir=logdir, name="PositiveLoss"),
-            ReconstructionLoss(negative_dataset, logdir=logdir, name="NegativeLoss"),
-        ]
-    )
-    trainer = ClassifierTrainer(
-        model=autoencoder,
-        metrics=metrics,
-        optimizer=tf.optimizers.Adam(1e-4),
-        loss=reconstruction_error,
-        logdir=str(logdir),
-        epochs=EPOCHS,
-    )
-    return trainer, autoencoder
-
-
-def _to_image(filename):
+def _to_image(filename) -> tf.Tensor:
     image = tf.io.read_file(filename)
     image = tf.image.decode_png(image)
     image = tf.image.convert_image_dtype(image, tf.float32)
@@ -228,7 +196,7 @@ def _to_image(filename):
     return image
 
 
-def _to_ashpy_format(image):
+def _to_ashpy_format(image: tf.Tensor) -> (tf.Tensor, tf.Tensor):
     # ashpy expects the format: features, labels.
     # Sicne we are traingn an autoencoder, and we want to
     # minimize the reconstruction error, we can pass image as labels
@@ -236,12 +204,29 @@ def _to_ashpy_format(image):
     return image, image
 
 
-def _train(
-    positive_dataset: tf.data.Dataset, negative_dataset: tf.data.Dataset, logdir: Path
-):
+def _augment(image: tf.Tensor):
 
-    trainer, _ = _define_or_restore(logdir, positive_dataset, negative_dataset)
-    trainer(positive_dataset, positive_dataset)
+    return tf.stack(
+        [
+            tf.image.random_flip_left_right(image),
+            tf.image.random_contrast(image, lower=0.1, upper=0.6),
+            tf.image.random_hue(image, max_delta=0.2),
+            tf.image.random_brightness(image, max_delta=0.2),
+            tf.image.random_saturation(image, lower=0.1, upper=0.6),
+            tf.image.random_jpeg_quality(
+                image, min_jpeg_quality=20, max_jpeg_quality=100
+            ),
+        ]
+    )
+
+
+def _build_dataset(glob_path: Path, augmentation: bool = False):
+
+    dataset = tf.data.Dataset.list_files(str(glob_path)).map(_to_image)
+    if augmentation:
+        dataset = dataset.map(_augment).unbatch().cache()
+
+    return dataset.map(_to_ashpy_format).cache().batch(BATCH_SIZE).prefetch(1)
 
 
 def train(dataset_path: Path, logdir: Path):
@@ -251,29 +236,52 @@ def train(dataset_path: Path, logdir: Path):
         logdir: destination of the logging dir, checkpoing and selected best models.
     """
 
-    datasets = {
-        key: tf.data.Dataset.list_files(str(dataset_path / key / "*.png"))
-        .map(_to_image)
-        .map(_to_ashpy_format)
-        .cache()
-        .batch(BATCH_SIZE)
-        .prefetch(1)
-        for key in ["on", "off"]
+    keys = ["on", "off"]
+    training_datasets = {
+        key: _build_dataset(dataset_path / key / "*.png", augmentation=True)
+        for key in keys
+    }
+    validation_datasets = {
+        key: _build_dataset(dataset_path / key / "*.png", augmentation=False)
+        for key in keys
     }
 
-    _train(
-        positive_dataset=datasets["on"],
-        negative_dataset=datasets["off"],
-        logdir=logdir / "on",
+    reconstruction_error = ClassifierLoss(tf.keras.losses.MeanSquaredError())
+    autoencoder = get_model()
+    autoencoder.summary()
+
+    trainer = ClassifierTrainer(
+        model=autoencoder,
+        # we are intrested only in the performance on unseen data.
+        # Thus we measure the metrics on the validation datasets only
+        # The only metric that is reallu measure both in training and validation
+        # is the loss (executed automatically by ashpy)
+        metrics=[
+            LD(
+                validation_datasets["on"],
+                validation_datasets["off"],
+                model_selection_operator=operator.gt,
+            ),
+            ReconstructionLoss(
+                validation_datasets["on"], logdir=logdir, name="PositiveLoss"
+            ),
+            ReconstructionLoss(
+                validation_datasets["off"], logdir=logdir, name="NegativeLoss"
+            ),
+        ],
+        optimizer=tf.optimizers.Adam(1e-4),
+        loss=reconstruction_error,
+        logdir=str(logdir / "on"),
+        epochs=EPOCHS,
     )
 
-    # Keep the best model checkpoints and export them as SavedModels
-    key = "on"
-    # Use the trainer to correctly restore the parameters of the best model
-    best_path = logdir / key / "best" / "LD"
-    _, autoencoder = _define_or_restore(best_path)
+    trainer(training_datasets["on"], validation_datasets["on"])
 
-    dest_path = logdir / key / "saved"
+    # Restore the best model and save it as a SavedModel
+    best_path = logdir / "on" / "best" / "LD"
+    autoencoder = ClassifierRestorer(str(best_path)).restore_model(autoencoder)
+
+    dest_path = logdir / "on" / "saved"
     autoencoder.save(str(dest_path))
     copyfile(best_path / "LD.json", dest_path / "LD.json")
 

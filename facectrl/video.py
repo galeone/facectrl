@@ -14,11 +14,11 @@ import numpy as np
 from .detector import FaceDetector
 
 
-class WebcamVideoStream:
+class VideoStream:
     """Non locking version of a VideoCapture stream."""
 
     def __init__(self, src: int = 0) -> None:
-        """Initializes the WebcamVideoStream.
+        """Initializes the VideoStream.
         Acquires the control of the VideoSource src and
         prevents concurrent accesses.
 
@@ -37,7 +37,7 @@ class WebcamVideoStream:
 
     # Below we use a forward declaration to correctly type annotating
     # the start method, that returns a type not yet conpletely defined
-    def _start(self) -> "WebcamVideoStream":
+    def _start(self) -> "VideoStream":
         """Start the video stream. Creates a thread that initializes the
         self._frame variable with the first frame.
         Does nothing if the stream has already been started.
@@ -89,8 +89,8 @@ class WebcamVideoStream:
             self._fps = self._stream.get(cv2.CAP_PROP_FPS)
         return self._fps
 
-    def __enter__(self) -> "WebcamVideoStream":  # forward declaration
-        """Acquire resources and start the WebcamVideoStream."""
+    def __enter__(self) -> "VideoStream":  # forward declaration
+        """Acquire resources and start the VideoStream."""
         self._stream = cv2.VideoCapture(self._src)
         (_, self._frame) = self._stream.read()
 

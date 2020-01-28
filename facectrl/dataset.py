@@ -15,7 +15,7 @@ import cv2
 import tensorflow as tf
 
 from facectrl.detector import FaceDetector
-from facectrl.video import WebcamVideoStream
+from facectrl.video import VideoStream
 
 
 class Builder:
@@ -27,7 +27,7 @@ class Builder:
         Args:
             dest: the destination folder for the dataset.
             params: Path of the haar cascade classifier parameters.
-            src: the ID of the video stream to use (input of WebcamVideoStream).
+            src: the ID of the video stream to use (input of VideoStream).
         Returns:
             None
         """
@@ -37,7 +37,7 @@ class Builder:
             os.makedirs(self._on_dir)
         if not self._off_dir.exists():
             os.makedirs(self._off_dir)
-        self._stream = WebcamVideoStream(src)
+        self._stream = VideoStream(src)
         self._detector = FaceDetector(params)
 
     def _acquire(self, path, num_samples, expansion, prefix) -> None:

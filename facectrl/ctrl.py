@@ -19,7 +19,7 @@ import tensorflow as tf
 from gi.repository import GLib, Playerctl
 
 from facectrl.detector import FaceDetector
-from facectrl.video import Tracker, WebcamVideoStream
+from facectrl.video import Tracker, VideoStream
 
 
 class Controller:
@@ -28,7 +28,7 @@ class Controller:
     def __init__(
         self,
         player_name,
-        stream: WebcamVideoStream,
+        stream: VideoStream,
         detector: FaceDetector,
         logdir: Path,
         debug: bool,
@@ -178,7 +178,7 @@ def main():
     parser.add_argument("--debug", default=False, action="store_true")
     args = parser.parse_args()
 
-    stream = WebcamVideoStream(args.stream_source)
+    stream = VideoStream(args.stream_source)
     detector = FaceDetector(Path(args.classifier_params))
     Controller(args.player, stream, detector, Path(args.logdir), args.debug)
 

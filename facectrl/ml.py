@@ -8,15 +8,18 @@
 The package contains everything needed: models, training loop and dataset creation.
 """
 
+import logging
 import operator
 import os
 import sys
 from argparse import ArgumentParser
+from enum import Enum, auto
 from pathlib import Path
 from shutil import copyfile
 from typing import Callable, Dict
 
 import ashpy
+import cv2
 import tensorflow as tf
 from ashpy.losses.classifier import ClassifierLoss
 from ashpy.modes import LogEvalMode
@@ -24,7 +27,7 @@ from ashpy.restorers.classifier import ClassifierRestorer
 from ashpy.trainers.classifier import ClassifierTrainer
 
 BATCH_SIZE = 32
-EPOCHS = 100
+EPOCHS = 20
 
 
 class ReconstructionLoss(ashpy.metrics.Metric):
@@ -62,6 +65,7 @@ class ReconstructionLoss(ashpy.metrics.Metric):
 
         self._mse = tf.keras.losses.MeanSquaredError()
         self._dataset = dataset
+        self.mean, self.variance = None, None
 
     def update_state(self, context: ashpy.contexts.ClassifierContext) -> None:
         """
@@ -72,13 +76,19 @@ class ReconstructionLoss(ashpy.metrics.Metric):
                 all the information the Metric needs.
 
         """
+        values = []
         for images, _ in self._dataset:
             reconstructions = context.classifier_model(
                 images, training=context.log_eval_mode == LogEvalMode.TRAIN
             )
+
+            mse = self._mse(images, reconstructions)
+            values.append(mse)
             self._distribute_strategy.experimental_run(
-                lambda: self._metric.update_state(self._mse(images, reconstructions))
+                lambda: self._metric.update_state(mse)
             )
+
+        self.mean, self.variance = tf.nn.moments(tf.stack(values), axes=[0])
 
 
 class LD(ashpy.metrics.Metric):
@@ -126,6 +136,8 @@ class LD(ashpy.metrics.Metric):
 
         self._positive_th = -1.0
         self._negative_th = -1.0
+        self._positive_variance = 0.0
+        self._negative_variance = 0.0
 
     def update_state(self, context: ashpy.contexts.ClassifierContext) -> None:
         """
@@ -148,7 +160,10 @@ class LD(ashpy.metrics.Metric):
             )
         )
         self._positive_th = self._mean_positive_loss.result()
+        self._positive_variance = self._mean_positive_loss.variance.numpy()
+
         self._negative_th = self._mean_negative_loss.result()
+        self._negative_variance = self._mean_negative_loss.variance.numpy()
 
         self._mean_negative_loss.reset_states()
         self._mean_positive_loss.reset_states()
@@ -165,7 +180,9 @@ class LD(ashpy.metrics.Metric):
                 **what_to_write,
                 **{
                     "positive_threshold": self._positive_th,
+                    "positive_variance": self._positive_variance,
                     "negative_threshold": self._negative_th,
+                    "negative_variance": self._negative_variance,
                 },
             },
         )
@@ -176,11 +193,11 @@ def get_model() -> tf.keras.Model:
     # encoding, representation = autoencoder(input)
     inputs = tf.keras.layers.Input(shape=(64, 64, 3))
     net = tf.keras.layers.Flatten()(inputs)
+    net = tf.keras.layers.Dense(128, activation=tf.nn.sigmoid)(net)
     net = tf.keras.layers.Dense(64, activation=tf.nn.sigmoid)(net)
-    net = tf.keras.layers.Dense(32, activation=tf.nn.sigmoid)(net)
-    net = tf.keras.layers.Dense(16, activation=tf.nn.sigmoid)(net)  # encoding
-    net = tf.keras.layers.Dense(32, activation=tf.nn.sigmoid)(net)
+    net = tf.keras.layers.Dense(32, activation=tf.nn.sigmoid)(net)  # encoding
     net = tf.keras.layers.Dense(64, activation=tf.nn.sigmoid)(net)
+    net = tf.keras.layers.Dense(128, activation=tf.nn.sigmoid)(net)
     net = tf.keras.layers.Dense(64 * 64 * 3, activation=tf.nn.sigmoid)(net)
     reconstructions = tf.keras.layers.Reshape((64, 64, 3))(net)
 
@@ -229,6 +246,73 @@ def _build_dataset(glob_path: Path, augmentation: bool = False):
     return dataset.map(_to_ashpy_format).cache().batch(BATCH_SIZE).prefetch(1)
 
 
+class ClassificationResult(Enum):
+    HEADPHONES_ON = auto()
+    HEADPHONES_OFF = auto()
+    UNKNOWN = auto()
+
+
+class Classifier:
+    def __init__(self, autoencoder, thresholds, debug: bool = False):
+        self._autoencoder = autoencoder
+        self._thresholds = thresholds
+        self._mse = tf.keras.losses.MeanSquaredError()
+        self._debug = debug
+
+    @staticmethod
+    def preprocess(crop):
+        face = tf.expand_dims(
+            tf.image.resize(tf.image.convert_image_dtype(crop, tf.float32), (64, 64)),
+            axis=[0],
+        )
+        return face
+
+    @property
+    def autoencoder(self):
+        return self._autoencoder
+
+    @property
+    def thresholds(self):
+        return self._thresholds
+
+    def __call__(self, face: tf.Tensor):
+        classified = ClassificationResult.UNKNOWN
+        reconstruction = self._autoencoder(face)
+        mse = self._mse(face, reconstruction).numpy()
+
+        on_sigma = 3.0 * self._thresholds["on_variance"]
+        off_sigma = 3.0 * self._thresholds["off_variance"]
+
+        if mse - on_sigma - self._thresholds["LD"] <= self._thresholds["on"]:
+            classified = ClassificationResult.HEADPHONES_ON
+
+        if mse + off_sigma >= self._thresholds["off"]:
+            classified = ClassificationResult.HEADPHONES_OFF
+
+        if classified != ClassificationResult.UNKNOWN:
+            logging.info("Classified as: %s with mse %f", classified, mse)
+            if self._debug:
+                cv2.imshow(
+                    "reconstruction",
+                    tf.squeeze(
+                        tf.image.convert_image_dtype(reconstruction, tf.uint8)
+                    ).numpy(),
+                )
+                cv2.imshow(
+                    "input",
+                    tf.squeeze(tf.image.convert_image_dtype(face, tf.uint8)).numpy(),
+                )
+        else:
+            logging.info(
+                "Unable to classify the input because mse %s is outside of positive %f and negative %f",
+                mse,
+                self._thresholds["on"],
+                self._thresholds["off"],
+            )
+
+        return classified
+
+
 def train(dataset_path: Path, logdir: Path):
     """Train the model obtained with get_model().
     Args:
@@ -242,7 +326,7 @@ def train(dataset_path: Path, logdir: Path):
         for key in keys
     }
     validation_datasets = {
-        key: _build_dataset(dataset_path / key / "*.png", augmentation=False)
+        key: _build_dataset(dataset_path / key / "*.png", augmentation=True)
         for key in keys
     }
 

@@ -4,7 +4,7 @@
 #
 #    pip-compile requirements.in
 #
-ashpy==0.3.0
+ashpy==0.3.1
 numpy==1.18.1             # via ashpy, opencv-contrib-python, opencv-python, tensorflow-hub
 opencv-contrib-python==4.1.2.30
 opencv-python==4.1.2.30

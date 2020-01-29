@@ -11,7 +11,8 @@ from threading import Lock, Thread
 import cv2
 import numpy as np
 
-from .detector import FaceDetector
+from facectrl.detector import FaceDetector
+from facectrl.ml import ClassificationResult
 
 
 class VideoStream:
@@ -106,10 +107,16 @@ class VideoStream:
 
 
 class Tracker:
-    """Tracks one object. It uses the MOSSE tracker."""
+    """Tracks one object. It uses the CSRT tracker."""
 
     def __init__(
-        self, frame, bounding_box, max_failures=10, name="face", debug: bool = False
+        self,
+        frame,
+        bounding_box,
+        classifier,
+        max_failures=10,
+        name="face",
+        debug: bool = False,
     ) -> None:
         """Initialize the frame tracker: start tracking the object
         localized into the bounding box in the current frame.
@@ -124,14 +131,15 @@ class Tracker:
             None
         """
         self._name = name
-        self._tracker = cv2.TrackerMOSSE_create()
+        self._tracker = cv2.TrackerCSRT_create()
         self._golden_crop = FaceDetector.crop(frame, tuple(bounding_box))
         self._tracker.init(frame, bounding_box)
         self._max_failures = max_failures
         self._failures = 0
         self._debug = debug
+        self._classifier = classifier
 
-    def track(self, frame):
+    def track_and_classify(self, frame):
         """Track the object (selected during the init), in the current frame.
         If the number of attempts of tracking exceed the value of max_failures
         (selected during the init), this function throws a ValueError exception.
@@ -139,6 +147,7 @@ class Tracker:
             frame: BGR input image
         """
         success, bounding_box = self._tracker.update(frame)
+        classification_result = ClassificationResult.UNKNOWN
         if success:
             self._failures = 0
             if self._debug:
@@ -151,6 +160,9 @@ class Tracker:
                 )
                 cv2.imshow("debug", frame)
                 cv2.waitKey(1)
+
+            crop = FaceDetector.crop(frame, bounding_box, expansion=(70, 70))
+            classification_result = self._classifier(self._classifier.preprocess(crop))
         else:
             self._failures += 1
             if self._failures >= self._max_failures:
@@ -159,3 +171,5 @@ class Tracker:
                 raise ValueError(
                     f"Can't find {self._name} for {self._max_failures} times"
                 )
+
+        return classification_result

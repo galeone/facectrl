@@ -12,6 +12,7 @@ import sys
 import time
 from argparse import ArgumentParser
 from pathlib import Path
+from typing import Tuple
 
 import cv2
 import gi
@@ -19,11 +20,13 @@ import tensorflow as tf
 from gi.repository import GLib, Playerctl
 
 from facectrl.detector import FaceDetector
+from facectrl.ml import ClassificationResult, Classifier
 from facectrl.video import Tracker, VideoStream
 
 
 class Controller:
-    """Controls everything that passes on the bus and on the camera."""
+    """Controls everything that passes on the bus and on the camera.
+    This is a Glib application"""
 
     def __init__(
         self,
@@ -41,16 +44,24 @@ class Controller:
         self._player = None
         self._stream = stream
         self._detector = detector
-        self._autoencoder = tf.keras.models.load_model(str(logdir / "on" / "saved"))
+        self._debug = debug
 
         with open(logdir / "on" / "best" / "LD" / "LD.json") as fp:
             json_file = json.load(fp)
-            self._thresh = {
+            thresholds = {
+                "LD": float(json_file["LD"]),
                 "on": float(json_file["positive_threshold"]),
+                "on_variance": float(json_file["positive_variance"]),
                 "off": float(json_file["negative_threshold"]),
+                "off_variance": float(json_file["negative_variance"]),
             }
-        self._mse = tf.keras.losses.MeanSquaredError()
-        self._debug = debug
+
+        self._classifier = Classifier(
+            autoencoder=tf.keras.models.load_model(str(logdir / "on" / "saved")),
+            thresholds=thresholds,
+            debug=self._debug,
+        )
+
         self._playing = False
         self._stop = False
 
@@ -60,6 +71,7 @@ class Controller:
 
     def _on_name_vanished(self, manager, name):
         self._stop = True
+        self._playing = False
 
     def _on_name_appeared(self, manager, name):
         if name.name != self._desired_player:
@@ -85,87 +97,74 @@ class Controller:
         logging.info("[STOP] Setting to False")
         self._playing = False
 
-    def _detect_and_classify(self, frame):
+    def _detect_and_classify(self, frame) -> Tuple[ClassificationResult, Tuple]:
         bounding_box = self._detector.detect(frame)
-        classified = ""
+        classification_result = ClassificationResult.UNKNOWN
 
         if bounding_box[-1] != 0:
             logging.info("Face found!")
 
-            # extract the face and classify it
-            face = tf.expand_dims(
-                tf.image.resize(
-                    tf.image.convert_image_dtype(
-                        FaceDetector.crop(frame, bounding_box, expansion=(70, 70)),
-                        tf.float32,
-                    ),
-                    (64, 64),
-                ),
-                axis=[0],
+            classification_result = self._classifier(
+                Classifier.preprocess(
+                    FaceDetector.crop(frame, bounding_box, expansion=(70, 70))
+                )
             )
 
-            reconstruction = self._autoencoder(face)
-            mse = self._mse(face, reconstruction)
-            logging.info("mse: %f", mse.numpy())
-            if mse <= self._thresh["on"]:
-                classified = "on"
-            if mse >= self._thresh["off"]:
-                classified = "off"
+        return classification_result, bounding_box
 
-            if classified:
-                logging.info("Classified as: %s with mse %f", classified, mse)
-                if self._debug:
-                    cv2.imshow(
-                        "reconstruction",
-                        tf.squeeze(
-                            tf.image.convert_image_dtype(reconstruction, tf.uint8)
-                        ).numpy(),
-                    )
-            else:
-                logging.info(
-                    "Unable to classify the input because mse %s is outside of positive %f and negative %f",
-                    mse,
-                    self._thresh["on"],
-                    self._thresh["off"],
-                )
+    def _decide(self, classification_result):
+        if self._stop:
+            pass
 
-        return classified, bounding_box
+        if (
+            not self._playing
+            and classification_result is ClassificationResult.HEADPHONES_ON
+        ):
+            logging.info("PLAY")
+            self._player.play()
+        if (
+            self._playing
+            and classification_result is ClassificationResult.HEADPHONES_OFF
+        ):
+            logging.info("PAUSE")
+            self._player.pause()
 
     def _start(self):
         with self._stream:
             while not self._stop:
-                classified = ""
+                classification_result = ClassificationResult.UNKNOWN
                 # find the face for the first time in this loop
                 logging.info("Detecting a face...")
                 start = time.time()
-                while not classified:
+                while classification_result is ClassificationResult.UNKNOWN:
                     frame = self._stream.read()
 
                     # More than 2 seconds without a detected face: pause
-                    if self._playing and time.time() - start > 2:
+                    if self._playing and time.time() - start > 2 and not self._stop:
                         logging.info("Nobody in front of the camera (?)")
                         self._player.pause()
 
-                    classified, bounding_box = self._detect_and_classify(frame)
+                    classification_result, bounding_box = self._detect_and_classify(
+                        frame
+                    )
 
                 tracker = Tracker(
                     frame,
                     bounding_box,
+                    classifier=self._classifier,
                     max_failures=self._stream.fps,
                     debug=self._debug,
                 )
 
-                if not self._playing and classified == "on":
-                    logging.info("PLAY")
-                    self._player.play()
-                if self._playing and classified == "off":
-                    logging.info("PAUSE")
-                    self._player.pause()
+                self._decide(classification_result)
+
                 try:
                     # Start tracking stream
                     while not self._stop:
                         frame = self._stream.read()
-                        tracker.track(frame)
+                        classification_result = tracker.track_and_classify(frame)
+                        self._decide(classification_result)
+
                 except ValueError:
                     logging.info("Tracking failed")
                 else:

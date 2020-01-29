@@ -85,6 +85,11 @@ class FaceDetector:
 
         x, y, width, height = bounding_box  # pylint: disable=invalid-name
 
+        if x < 0:
+            x = 0
+        if y < 0:
+            y = 0
+
         halfs = (expansion[0] // 2, expansion[1] // 2)
         if width + halfs[0] <= frame.shape[1]:
             width += halfs[0]
@@ -95,4 +100,8 @@ class FaceDetector:
         if y - halfs[1] >= 0:
             y -= halfs[1]
 
-        return frame[y : y + height, x : x + width]
+        image_crop = frame[y : y + height, x : x + width]
+        if image_crop.size == 0:
+            print(y, height, x, width, expansion)
+
+        return image_crop

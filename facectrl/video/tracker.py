@@ -8,21 +8,15 @@
 
 import cv2
 import numpy as np
-from facectrl.detector import FaceDetector
-from facectrl.ml import ClassificationResult
+
+from facectrl.ml import ClassificationResult, Classifier, FaceDetector
 
 
 class Tracker:
     """Tracks one object. It uses the CSRT tracker."""
 
     def __init__(
-        self,
-        frame,
-        bounding_box,
-        classifier,
-        max_failures=10,
-        name="face",
-        debug: bool = False,
+        self, frame, bounding_box, max_failures=10, debug: bool = False,
     ) -> None:
         """Initialize the frame tracker: start tracking the object
         localized into the bounding box in the current frame.
@@ -31,40 +25,68 @@ class Tracker:
             bounding_box: the bounding box containing the object to track
             max_failures: the number of frame to skip, before raising an
                           exception during the "track" call.
-            name: an identifier for the object to track
             debug: set to true to enable visual debugging (opencv window)
         Returns:
             None
         """
-        self._name = name
         self._tracker = cv2.TrackerCSRT_create()
         self._golden_crop = FaceDetector.crop(frame, tuple(bounding_box))
         self._tracker.init(frame, bounding_box)
         self._max_failures = max_failures
         self._failures = 0
         self._debug = debug
-        self._classifier = classifier
+        self._classifier = None
 
-    def track_and_classify(self, frame):
+    def track(self, frame):
         """Track the object (selected during the init), in the current frame.
         If the number of attempts of tracking exceed the value of max_failures
         (selected during the init), this function throws a ValueError exception.
         Args:
             frame: BGR input image
+        Returns:
+            success, bounding_box: a boolean that indicates if the tracking succded
+            and a bounding_box containing the tracked objecrt positon.
         """
-        success, bounding_box = self._tracker.update(frame)
+        return self._tracker.update(frame)
+
+    @property
+    def classifier(self) -> Classifier:
+        """Get the classifier previousluy set. None otherwise."""
+        return self._classifier
+
+    @classifier.setter
+    def classifier(self, classifier: Classifier):
+        """
+        Args:
+            classifier: the Classifier to use
+        """
+        self._classifier = classifier
+
+    def track_and_classify(self, frame: np.array) -> ClassificationResult:
+        """Track the object (selected during the init), in the current frame.
+        If the number of attempts of tracking exceed the value of max_failures
+        (selected during the init), this function throws a ValueError exception.
+        Args:
+            frame: BGR input image
+        Return:
+            classification_result (ClassificationResult)
+        """
+        if not self._classifier:
+            raise ValueError("You need to set a classifier first.")
+        success, bounding_box = self.track(frame)
         classification_result = ClassificationResult.UNKNOWN
         if success:
             self._failures = 0
             if self._debug:
                 bounding_box = np.array(bounding_box, dtype=np.int32)
+                frame_copy = frame.copy()
                 cv2.rectangle(
-                    frame,
+                    frame_copy,
                     tuple(bounding_box[:2]),
                     tuple(bounding_box[:2] + bounding_box[2:]),
                     (0, 255, 0),
                 )
-                cv2.imshow("debug", frame)
+                cv2.imshow("debug", frame_copy)
                 cv2.waitKey(1)
 
             crop = FaceDetector.crop(frame, bounding_box, expansion=(70, 70))
@@ -74,8 +96,6 @@ class Tracker:
             if self._failures >= self._max_failures:
                 if self._debug:
                     cv2.destroyAllWindows()
-                raise ValueError(
-                    f"Can't find {self._name} for {self._max_failures} times"
-                )
+                raise ValueError(f"Can't find object for {self._max_failures} times")
 
         return classification_result

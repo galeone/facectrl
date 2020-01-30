@@ -12,10 +12,10 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 import cv2
-import tensorflow as tf
+import numpy as np
 
-from facectrl.detector import FaceDetector
-from facectrl.video import VideoStream
+from facectrl.ml import FaceDetector
+from facectrl.video import Tracker, VideoStream
 
 
 class Builder:
@@ -40,24 +40,31 @@ class Builder:
         self._stream = VideoStream(src)
         self._detector = FaceDetector(params)
 
-    def _acquire(self, path, num_samples, expansion, prefix) -> None:
+    def _acquire(self, path, expansion, prefix) -> None:
         """Acquire and store into path the samples.
         Args:
             path: the path where to store the cropped images.
-            num_samples: the number of samples to save before exiting.
             expansion: the expansion to apply to the bounding box detected.
             prefix: prefix added to the opencv window
         Returns:
             None
         """
         i = 0
-        yes_no_keys = [ord("y"), ord("n")]
+        quit_key = ord("q")
         start = len(list(path.glob("*.png")))
         with self._stream:
-            while i < num_samples:
+            detected = False
+            while not detected:
                 frame = self._stream.read()
                 bounding_box = self._detector.detect(frame)
-                if bounding_box[-1] != 0:
+                detected = bounding_box[-1] != 0
+
+            tracker = Tracker(frame, bounding_box)
+            success = True
+            while success:
+                success, bounding_box = tracker.track(frame)
+                if success:
+                    bounding_box = np.int32(bounding_box)
                     crop = FaceDetector.crop(frame, bounding_box, expansion)
                     crop_copy = crop.copy()
                     cv2.putText(
@@ -69,35 +76,32 @@ class Builder:
                         color=(0, 0, 255),
                         thickness=2,
                     )
-                    cv2.imshow(f"{prefix} Accept [y/n]", crop_copy)
-                    key = cv2.waitKey(0) & 0xFF
-                    while key not in yes_no_keys:
-                        print("Accept with Y, reject with N")
-                        key = cv2.waitKey(0) & 0xFF
-                    if key == yes_no_keys[0]:
-                        cv2.imwrite(str(path / Path(str(start + i) + ".png")), crop)
-                        i += 1
+                    cv2.imshow("grab", crop_copy)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == quit_key:
+                        success = False
+                    cv2.imwrite(str(path / Path(str(start + i) + ".png")), crop)
+                    i += 1
+                frame = self._stream.read()
         cv2.destroyAllWindows()
 
-    def on(self, num_samples=100, expansion=(70, 70)):
+    def headphones_on(self, expansion=(70, 70)):
         """Acquire and store the images with the headphones on.
         Args:
-            num_samples: the number of samples to save before exiting.
             expansion: the expansion to apply to the bounding box detected.
         Returns:
             None
         """
-        return self._acquire(self._on_dir, num_samples, expansion, "ON")
+        return self._acquire(self._on_dir, expansion, "ON")
 
-    def off(self, num_samples=100, expansion=(70, 70)):
+    def headphones_off(self, expansion=(70, 70)):
         """Acquire and store the images with the headphones off.
         Args:
-            num_samples: the number of samples to save before exiting.
             expansion: the expansion to apply to the bounding box detected.
         Returns:
             None
         """
-        return self._acquire(self._off_dir, num_samples, expansion, "OFF")
+        return self._acquire(self._off_dir, expansion, "OFF")
 
 
 def main():
@@ -106,7 +110,6 @@ def main():
     parser.add_argument("--dataset-path", required=True)
     parser.add_argument("--classifier-params", required=True)
     parser.add_argument("--stream-source", default=0)
-    parser.add_argument("--num-samples", default=100, type=int)
     parser.add_argument("--expansion", default=70)
 
     args = parser.parse_args()
@@ -114,12 +117,18 @@ def main():
     builder = Builder(
         Path(args.dataset_path), Path(args.classifier_params), args.stream_source
     )
-    print("Acquiring picture WITH HEADPHONES ON in 5 seconds...")
+    print(
+        "Acquiring pictures WITH HEADPHONES ON in 5 seconds..."
+        "Press [Q] to stop capturing."
+    )
     time.sleep(5)
-    builder.on(args.num_samples, (args.expansion, args.expansion))
-    print("Acquiring picture WITH HEADPHONES OFF in 5 seconds...")
+    builder.headphones_on((args.expansion, args.expansion))
+    print(
+        "Acquiring picture WITH HEADPHONES OFF in 5 seconds..."
+        "Press [Q] to stop capturing."
+    )
     time.sleep(5)
-    builder.off(args.num_samples, (args.expansion, args.expansion))
+    builder.headphones_off((args.expansion, args.expansion))
 
 
 if __name__ == "__main__":

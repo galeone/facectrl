@@ -17,10 +17,10 @@ from typing import Tuple
 import cv2
 import gi
 import tensorflow as tf
-from facectrl.detector import FaceDetector
-from facectrl.ml import ClassificationResult, Classifier
-from facectrl.video import Tracker, VideoStream
 from gi.repository import GLib, Playerctl
+
+from facectrl.ml import ClassificationResult, Classifier, FaceDetector
+from facectrl.video import Tracker, VideoStream
 
 
 class Controller:
@@ -150,10 +150,10 @@ class Controller:
                 tracker = Tracker(
                     frame,
                     bounding_box,
-                    classifier=self._classifier,
                     max_failures=self._stream.fps,
                     debug=self._debug,
                 )
+                tracker.classifier = self._classifier
 
                 self._decide(classification_result)
 

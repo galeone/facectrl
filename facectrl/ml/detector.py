@@ -100,7 +100,4 @@ class FaceDetector:
             y -= halfs[1]
 
         image_crop = frame[y : y + height, x : x + width]
-        if image_crop.size == 0:
-            print(y, height, x, width, expansion)
-
         return image_crop

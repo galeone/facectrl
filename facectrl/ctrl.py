@@ -17,11 +17,10 @@ from typing import Tuple
 import cv2
 import gi
 import tensorflow as tf
-from gi.repository import GLib, Playerctl
-
 from facectrl.detector import FaceDetector
 from facectrl.ml import ClassificationResult, Classifier
 from facectrl.video import Tracker, VideoStream
+from gi.repository import GLib, Playerctl
 
 
 class Controller:

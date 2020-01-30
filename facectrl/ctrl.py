@@ -69,8 +69,8 @@ class Controller:
         glib_loop.run()
 
     def _on_name_vanished(self, manager, name):
+        logging.info("Player vanising...")
         self._stop = True
-        self._playing = False
 
     def _on_name_appeared(self, manager, name):
         if name.name != self._desired_player:

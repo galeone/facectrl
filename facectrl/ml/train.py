@@ -26,7 +26,7 @@ from ashpy.restorers.classifier import ClassifierRestorer
 from ashpy.trainers.classifier import ClassifierTrainer
 
 BATCH_SIZE = 32
-EPOCHS = 20
+EPOCHS = 50
 
 
 class ReconstructionLoss(ashpy.metrics.Metric):
@@ -192,11 +192,11 @@ def get_model() -> tf.keras.Model:
     # encoding, representation = autoencoder(input)
     inputs = tf.keras.layers.Input(shape=(64, 64, 3))
     net = tf.keras.layers.Flatten()(inputs)
-    net = tf.keras.layers.Dense(128, activation=tf.nn.sigmoid)(net)
-    net = tf.keras.layers.Dense(64, activation=tf.nn.sigmoid)(net)
-    net = tf.keras.layers.Dense(32, activation=tf.nn.sigmoid)(net)  # encoding
-    net = tf.keras.layers.Dense(64, activation=tf.nn.sigmoid)(net)
-    net = tf.keras.layers.Dense(128, activation=tf.nn.sigmoid)(net)
+    net = tf.keras.layers.Dense(128, activation=tf.nn.relu)(net)
+    net = tf.keras.layers.Dense(64, activation=tf.nn.relu)(net)
+    net = tf.keras.layers.Dense(32, activation=tf.nn.relu)(net)  # encoding
+    net = tf.keras.layers.Dense(64, activation=tf.nn.relu)(net)
+    net = tf.keras.layers.Dense(128, activation=tf.nn.relu)(net)
     net = tf.keras.layers.Dense(64 * 64 * 3, activation=tf.nn.sigmoid)(net)
     reconstructions = tf.keras.layers.Reshape((64, 64, 3))(net)
 
@@ -258,7 +258,7 @@ def _build_dataset(glob_path: Path, augmentation: bool = False) -> tf.data.Datas
     """
     dataset = tf.data.Dataset.list_files(str(glob_path)).map(_to_image)
     if augmentation:
-        dataset = dataset.map(_augment).unbatch().cache()
+        dataset = dataset.map(_augment).unbatch().shuffle(100)
 
     return dataset.map(_to_ashpy_format).cache().batch(BATCH_SIZE).prefetch(1)
 
@@ -276,7 +276,7 @@ def train(dataset_path: Path, logdir: Path):
         for key in keys
     }
     validation_datasets = {
-        key: _build_dataset(dataset_path / key / "*.png", augmentation=True)
+        key: _build_dataset(dataset_path / key / "*.png", augmentation=False)
         for key in keys
     }
 

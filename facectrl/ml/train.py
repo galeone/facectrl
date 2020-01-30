@@ -4,22 +4,21 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-"""Machine learning models used to detect if you're wearning headphones.
-The package contains everything needed: models, training loop and dataset creation.
+"""
+The package contain the autoencoder (model) definition, the dataset creation,
+the metrics, and the training loop. Using AshPy we have model selection for free.
 """
 
-import logging
+
 import operator
 import os
 import sys
 from argparse import ArgumentParser
-from enum import Enum, auto
 from pathlib import Path
 from shutil import copyfile
 from typing import Callable, Dict
 
 import ashpy
-import cv2
 import tensorflow as tf
 from ashpy.losses.classifier import ClassifierLoss
 from ashpy.modes import LogEvalMode
@@ -205,7 +204,9 @@ def get_model() -> tf.keras.Model:
     return model
 
 
-def _to_image(filename) -> tf.Tensor:
+def _to_image(filename: str) -> tf.Tensor:
+    """Read the image from the path, and returns the resizes (64x64) image."""
+
     image = tf.io.read_file(filename)
     image = tf.image.decode_png(image)
     image = tf.image.convert_image_dtype(image, tf.float32)
@@ -214,15 +215,23 @@ def _to_image(filename) -> tf.Tensor:
 
 
 def _to_ashpy_format(image: tf.Tensor) -> (tf.Tensor, tf.Tensor):
+    """Given an image, returns the pair (image, image)."""
     # ashpy expects the format: features, labels.
-    # Sicne we are traingn an autoencoder, and we want to
+    # Since we are traingn an autoencoder, and we want to
     # minimize the reconstruction error, we can pass image as labels
     # and use the classifierloss wit the mse loss inside.
     return image, image
 
 
-def _augment(image: tf.Tensor):
+def _augment(image: tf.Tensor) -> tf.Tensor:
+    """Given an image, returns a batch with all the tf.image.random*
+    transformation applied.
+    Args:
+        image (tf.Tensor): the input image, 3D tensor.
 
+    Returns:
+        images (tf.Tensor): 4D tensor.
+    """
     return tf.stack(
         [
             tf.image.random_flip_left_right(image),
@@ -237,80 +246,21 @@ def _augment(image: tf.Tensor):
     )
 
 
-def _build_dataset(glob_path: Path, augmentation: bool = False):
-
+def _build_dataset(glob_path: Path, augmentation: bool = False) -> tf.data.Dataset:
+    """Read all the images in the glob_path, and optionally applies
+    the data agumentation step.
+    Args:
+        glob_path (Path): the path of the captured images, with a globa pattern.
+        augmentation(bool): when True, applies data agumentation and increase the
+                            dataset size.
+    Returns:
+        the tf.data.Dataset
+    """
     dataset = tf.data.Dataset.list_files(str(glob_path)).map(_to_image)
     if augmentation:
         dataset = dataset.map(_augment).unbatch().cache()
 
     return dataset.map(_to_ashpy_format).cache().batch(BATCH_SIZE).prefetch(1)
-
-
-class ClassificationResult(Enum):
-    HEADPHONES_ON = auto()
-    HEADPHONES_OFF = auto()
-    UNKNOWN = auto()
-
-
-class Classifier:
-    def __init__(self, autoencoder, thresholds, debug: bool = False):
-        self._autoencoder = autoencoder
-        self._thresholds = thresholds
-        self._mse = tf.keras.losses.MeanSquaredError()
-        self._debug = debug
-
-    @staticmethod
-    def preprocess(crop):
-        face = tf.expand_dims(
-            tf.image.resize(tf.image.convert_image_dtype(crop, tf.float32), (64, 64)),
-            axis=[0],
-        )
-        return face
-
-    @property
-    def autoencoder(self):
-        return self._autoencoder
-
-    @property
-    def thresholds(self):
-        return self._thresholds
-
-    def __call__(self, face: tf.Tensor):
-        classified = ClassificationResult.UNKNOWN
-        reconstruction = self._autoencoder(face)
-        mse = self._mse(face, reconstruction).numpy()
-
-        on_sigma = 3.0 * self._thresholds["on_variance"]
-        off_sigma = 3.0 * self._thresholds["off_variance"]
-
-        if mse - on_sigma - self._thresholds["LD"] <= self._thresholds["on"]:
-            classified = ClassificationResult.HEADPHONES_ON
-
-        if mse + off_sigma >= self._thresholds["off"]:
-            classified = ClassificationResult.HEADPHONES_OFF
-
-        if classified != ClassificationResult.UNKNOWN:
-            logging.info("Classified as: %s with mse %f", classified, mse)
-            if self._debug:
-                cv2.imshow(
-                    "reconstruction",
-                    tf.squeeze(
-                        tf.image.convert_image_dtype(reconstruction, tf.uint8)
-                    ).numpy(),
-                )
-                cv2.imshow(
-                    "input",
-                    tf.squeeze(tf.image.convert_image_dtype(face, tf.uint8)).numpy(),
-                )
-        else:
-            logging.info(
-                "Unable to classify the input because mse %s is outside of positive %f and negative %f",
-                mse,
-                self._thresholds["on"],
-                self._thresholds["off"],
-            )
-
-        return classified
 
 
 def train(dataset_path: Path, logdir: Path):
@@ -371,7 +321,7 @@ def train(dataset_path: Path, logdir: Path):
 
 
 def main():
-    """Main method, invoked with python -m facectrl.ml"""
+    """Main method, invoked with python -m facectrl.ml.train"""
     parser = ArgumentParser()
     parser.add_argument("--dataset-path", required=True)
     parser.add_argument("--logdir", required=True)

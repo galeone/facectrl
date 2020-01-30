@@ -48,8 +48,8 @@ class Classifier:
         Return:
             face (tf.Tensor): the post-processed face, float32, 64x64. In RGB.
         """
-        blue, green, red = tf.unstack(crop, axis=-1)
-        rgb = tf.stack([red, green, blue])
+        crop = tf.convert_to_tensor(crop)
+        rgb = tf.reverse(crop, axis=[-1])
         face = tf.expand_dims(
             tf.image.resize(tf.image.convert_image_dtype(rgb, tf.float32), (64, 64)),
             axis=[0],

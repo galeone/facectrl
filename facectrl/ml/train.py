@@ -25,9 +25,6 @@ from ashpy.modes import LogEvalMode
 from ashpy.restorers.classifier import ClassifierRestorer
 from ashpy.trainers.classifier import ClassifierTrainer
 
-BATCH_SIZE = 32
-EPOCHS = 50
-
 
 class ReconstructionLoss(ashpy.metrics.Metric):
     """Computes the Reconstruction Loss (MSE) using the passed dataset."""
@@ -168,10 +165,16 @@ class LD(ashpy.metrics.Metric):
         self._mean_positive_loss.reset_states()
 
     def json_write(self, filename: str, what_to_write: Dict) -> None:
-        # the json_write function is called when the model selection operation is triggered
-        # in this case, it means that there is a great different between the loss value in positive
-        # and negativa values. Thus,we want to save the difference (passed in what_to_write)
-        # and also the thresholds that we saved in the self._positive_th and self._negative_th
+        """The json_write function is called when the model selection operation
+        is performed. In this case, it means that there is a great different
+        between the loss value in positive and negativa values.
+        Thus,we want to save the difference (passed in what_to_write) and also the
+        thresholds that we saved in the self._positive_th and self._negative_th.
+
+        Args:
+            filename: the path of the JSON
+            what_to_write: the dictionary with the values to write on the JSON.
+        """
 
         super().json_write(
             filename,
@@ -246,11 +249,14 @@ def _augment(image: tf.Tensor) -> tf.Tensor:
     )
 
 
-def _build_dataset(glob_path: Path, augmentation: bool = False) -> tf.data.Dataset:
+def _build_dataset(
+    glob_path: Path, batch_size, augmentation: bool = False
+) -> tf.data.Dataset:
     """Read all the images in the glob_path, and optionally applies
     the data agumentation step.
     Args:
-        glob_path (Path): the path of the captured images, with a globa pattern.
+        glob_path (Path): the path of the captured images, with a glob pattern.
+        batch_size (int): the batch size.
         augmentation(bool): when True, applies data agumentation and increase the
                             dataset size.
     Returns:
@@ -260,23 +266,27 @@ def _build_dataset(glob_path: Path, augmentation: bool = False) -> tf.data.Datas
     if augmentation:
         dataset = dataset.map(_augment).unbatch().shuffle(100)
 
-    return dataset.map(_to_ashpy_format).cache().batch(BATCH_SIZE).prefetch(1)
+    return dataset.map(_to_ashpy_format).cache().batch(batch_size).prefetch(1)
 
 
-def train(dataset_path: Path, logdir: Path):
+def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> None:
     """Train the model obtained with get_model().
     Args:
-        dataset_path: path of the dataset containing the headphone on/off pics.
-        logdir: destination of the logging dir, checkpoing and selected best models.
+        dataset_path (Path): path of the dataset containing the headphone on/off pics.
+        batch_size (int): the batch size.
+        epochs (int): number of the training epochs.
+        logdir (Path): destination of the logging dir, checkpoing and selected best models.
     """
 
     keys = ["on", "off"]
     training_datasets = {
-        key: _build_dataset(dataset_path / key / "*.png", augmentation=True)
+        key: _build_dataset(dataset_path / key / "*.png", batch_size, augmentation=True)
         for key in keys
     }
     validation_datasets = {
-        key: _build_dataset(dataset_path / key / "*.png", augmentation=False)
+        key: _build_dataset(
+            dataset_path / key / "*.png", batch_size, augmentation=False
+        )
         for key in keys
     }
 
@@ -306,7 +316,7 @@ def train(dataset_path: Path, logdir: Path):
         optimizer=tf.optimizers.Adam(1e-4),
         loss=reconstruction_error,
         logdir=str(logdir / "on"),
-        epochs=EPOCHS,
+        epochs=epochs,
     )
 
     trainer(training_datasets["on"], validation_datasets["on"])
@@ -320,11 +330,13 @@ def train(dataset_path: Path, logdir: Path):
     copyfile(best_path / "LD.json", dest_path / "LD.json")
 
 
-def main():
+def main() -> int:
     """Main method, invoked with python -m facectrl.ml.train"""
     parser = ArgumentParser()
     parser.add_argument("--dataset-path", required=True)
     parser.add_argument("--logdir", required=True)
+    parser.add_argument("--batch-size", default=32, type=int)
+    parser.add_argument("--epochs", default=100, type=int)
     args = parser.parse_args()
 
     dataset_path = Path(args.dataset_path)
@@ -337,7 +349,8 @@ def main():
     ):
         raise ValueError(f"Wrong dataset {dataset_path}. Missing on/off folders")
 
-    train(dataset_path, Path(args.logdir))
+    train(dataset_path, args.batch_size, args.epochs, Path(args.logdir))
+    return 0
 
 
 if __name__ == "__main__":

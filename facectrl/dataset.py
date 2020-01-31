@@ -85,7 +85,7 @@ class Builder:
                 frame = self._stream.read()
         cv2.destroyAllWindows()
 
-    def headphones_on(self, expansion=(70, 70)):
+    def headphones_on(self, expansion=(70, 70)) -> None:
         """Acquire and store the images with the headphones on.
         Args:
             expansion: the expansion to apply to the bounding box detected.
@@ -94,7 +94,7 @@ class Builder:
         """
         return self._acquire(self._on_dir, expansion, "ON")
 
-    def headphones_off(self, expansion=(70, 70)):
+    def headphones_off(self, expansion=(70, 70)) -> None:
         """Acquire and store the images with the headphones off.
         Args:
             expansion: the expansion to apply to the bounding box detected.
@@ -104,7 +104,7 @@ class Builder:
         return self._acquire(self._off_dir, expansion, "OFF")
 
 
-def main():
+def main() -> int:
     """Main method, invoked with python -m facectrl.dataset."""
     parser = ArgumentParser()
     parser.add_argument("--dataset-path", required=True)
@@ -129,6 +129,7 @@ def main():
     )
     time.sleep(5)
     builder.headphones_off((args.expansion, args.expansion))
+    return 0
 
 
 if __name__ == "__main__":

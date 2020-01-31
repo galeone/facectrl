@@ -6,6 +6,8 @@
 
 """Classes and utilities to use video streams."""
 
+from typing import Tuple
+
 import cv2
 import numpy as np
 
@@ -37,7 +39,7 @@ class Tracker:
         self._debug = debug
         self._classifier = None
 
-    def track(self, frame):
+    def track(self, frame) -> Tuple[bool, Tuple]:
         """Track the object (selected during the init), in the current frame.
         If the number of attempts of tracking exceed the value of max_failures
         (selected during the init), this function throws a ValueError exception.
@@ -55,7 +57,7 @@ class Tracker:
         return self._classifier
 
     @classifier.setter
-    def classifier(self, classifier: Classifier):
+    def classifier(self, classifier: Classifier) -> None:
         """
         Args:
             classifier: the Classifier to use

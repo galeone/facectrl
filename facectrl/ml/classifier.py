@@ -34,7 +34,7 @@ class Classifier:
 
     def __init__(
         self, autoencoder: tf.keras.Model, thresholds: Dict, debug: bool = False
-    ):
+    ) -> None:
         self._autoencoder = autoencoder
         self._thresholds = thresholds
         self._mse = tf.keras.losses.MeanSquaredError()
@@ -50,19 +50,18 @@ class Classifier:
         """
         crop = tf.convert_to_tensor(crop)
         rgb = tf.reverse(crop, axis=[-1])
-        face = tf.expand_dims(
+        return tf.expand_dims(
             tf.image.resize(tf.image.convert_image_dtype(rgb, tf.float32), (64, 64)),
             axis=[0],
         )
-        return face
 
     @property
-    def autoencoder(self):
+    def autoencoder(self) -> tf.keras.Model:
         """Get the autoencoder currently in use."""
         return self._autoencoder
 
     @property
-    def thresholds(self):
+    def thresholds(self) -> Dict:
         """Get the thresholds currently in use."""
         return self._thresholds
 
@@ -74,7 +73,7 @@ class Classifier:
             ClassificationResult: the result of the classification.
         """
         classified = ClassificationResult.UNKNOWN
-        reconstruction = self._autoencoder(face)
+        reconstruction = self._autoencoder(face)  # RGB images
         mse = self._mse(face, reconstruction).numpy()
 
         on_sigma = self._thresholds["on_variance"]
@@ -89,15 +88,22 @@ class Classifier:
         if classified != ClassificationResult.UNKNOWN:
             logging.info("Classified as: %s with mse %f", classified, mse)
             if self._debug:
+                # tf.reverse to go from RGB to BGR
                 cv2.imshow(
                     "reconstruction",
                     tf.squeeze(
-                        tf.image.convert_image_dtype(reconstruction, tf.uint8)
+                        tf.image.convert_image_dtype(
+                            tf.reverse(reconstruction, axis=[-1]), tf.uint8
+                        )
                     ).numpy(),
                 )
                 cv2.imshow(
                     "input",
-                    tf.squeeze(tf.image.convert_image_dtype(face, tf.uint8)).numpy(),
+                    tf.squeeze(
+                        tf.image.convert_image_dtype(
+                            tf.reverse(face, axis=[-1]), tf.uint8
+                        )
+                    ).numpy(),
                 )
         else:
             logging.info(

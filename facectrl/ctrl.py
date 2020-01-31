@@ -35,7 +35,7 @@ class Controller:
         detector: FaceDetector,
         logdir: Path,
         debug: bool,
-    ):
+    ) -> None:
         """The controller, that controles the player using the models."""
         self._desired_player = player_name
         self._manager = Playerctl.PlayerManager()
@@ -70,13 +70,13 @@ class Controller:
         glib_loop = GLib.MainLoop()
         glib_loop.run()
 
-    def _on_name_vanished(self, manager, name):
+    def _on_name_vanished(self, manager, name) -> None:
         self._locks["stop"].acquire()
         logging.info("Player vanising...")
         self._stop = True
         self._locks["stop"].release()
 
-    def _on_name_appeared(self, manager, name):
+    def _on_name_appeared(self, manager, name) -> None:
         if name.name != self._desired_player:
             pass
         self._player = Playerctl.Player.new_from_name(name)
@@ -88,19 +88,19 @@ class Controller:
         self._manager.manage_player(self._player)
         self._start()
 
-    def _on_play(self, player, status):
+    def _on_play(self, player, status) -> None:
         logging.info("[PLAY] Setting to True")
         self._locks["playing"].acquire()
         self._playing = True
         self._locks["playing"].release()
 
-    def _on_pause(self, player, status):
+    def _on_pause(self, player, status) -> None:
         logging.info("[PAUSE] Setting to False")
         self._locks["playing"].acquire()
         self._playing = False
         self._locks["playing"].release()
 
-    def _on_stop(self, player, status):
+    def _on_stop(self, player, status) -> None:
         logging.info("[STOP] Setting to False")
         self._locks["playing"].acquire()
         self._playing = False
@@ -121,7 +121,7 @@ class Controller:
 
         return classification_result, bounding_box
 
-    def _decide(self, classification_result):
+    def _decide(self, classification_result) -> None:
         self._locks["stop"].acquire()
         if not self._stop:
             if (
@@ -138,19 +138,19 @@ class Controller:
                 self._player.pause()
         self._locks["stop"].release()
 
-    def _is_stopped(self):
+    def _is_stopped(self) -> bool:
         self._locks["stop"].acquire()
         stop = self._stop
         self._locks["stop"].release()
         return stop
 
-    def _is_playing(self):
+    def _is_playing(self) -> bool:
         self._locks["playing"].acquire()
         playing = self._playing
         self._locks["playing"].release()
         return playing
 
-    def _start(self):
+    def _start(self) -> None:
         with self._stream:
             while not self._is_stopped():
                 classification_result = ClassificationResult.UNKNOWN

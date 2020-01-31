@@ -7,6 +7,7 @@
 """Classes and utilities to detect faces into images."""
 
 from pathlib import Path
+from typing import Tuple
 
 import cv2
 import numpy as np
@@ -25,7 +26,7 @@ class FaceDetector:
         """
         self.classifier = cv2.CascadeClassifier(str(params))
 
-    def detect(self, frame: np.array) -> tuple:
+    def detect(self, frame: np.array) -> Tuple:
         """Search for faces into the input frame.
         Returns the bounding box containing the bigger (close to the camera)
         detected face, if any.
@@ -68,7 +69,7 @@ class FaceDetector:
         return (0, 0, 0, 0)
 
     @staticmethod
-    def crop(frame, bounding_box, expansion=(0, 0)):
+    def crop(frame, bounding_box, expansion=(0, 0)) -> np.array:
         """
         Extract from the input frame the content of the bounding_box.
         Applies the required expension to the bounding box.

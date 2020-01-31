@@ -62,6 +62,7 @@ class ReconstructionLoss(ashpy.metrics.Metric):
         self._mse = tf.keras.losses.MeanSquaredError()
         self._dataset = dataset
         self.mean, self.variance = None, None
+        self.inputs, self.reconstructions = None, None
 
     def update_state(self, context: ashpy.contexts.ClassifierContext) -> None:
         """
@@ -83,6 +84,9 @@ class ReconstructionLoss(ashpy.metrics.Metric):
             self._distribute_strategy.experimental_run(
                 lambda: self._metric.update_state(mse)
             )
+        # save the last batch
+        self.inputs = images
+        self.reconstructions = reconstructions
 
         self.mean, self.variance = tf.nn.moments(tf.stack(values), axes=[0])
 
@@ -187,6 +191,41 @@ class LD(ashpy.metrics.Metric):
                     "negative_variance": self._negative_variance,
                 },
             },
+        )
+
+    def log(self, step: int) -> None:
+        """
+        Log the metric.
+        Args:
+            step: global step of training
+        """
+        super().log(step)
+        tf.summary.image(
+            "positive",
+            _normalize(
+                tf.concat(
+                    [
+                        self._mean_positive_loss.inputs,
+                        self._mean_positive_loss.reconstructions,
+                    ],
+                    axis=2,
+                )
+            ),
+            step=step,
+        )
+
+        tf.summary.image(
+            "negative",
+            _normalize(
+                tf.concat(
+                    [
+                        self._mean_negative_loss.inputs,
+                        self._mean_negative_loss.reconstructions,
+                    ],
+                    axis=2,
+                )
+            ),
+            step=step,
         )
 
 

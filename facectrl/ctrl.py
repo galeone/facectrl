@@ -12,6 +12,7 @@ import sys
 import time
 from argparse import ArgumentParser
 from pathlib import Path
+from threading import Lock
 from typing import Tuple
 
 import cv2
@@ -45,8 +46,8 @@ class Controller:
         self._detector = detector
         self._debug = debug
 
-        with open(logdir / "on" / "best" / "LD" / "LD.json") as fp:
-            json_file = json.load(fp)
+        with open(logdir / "on" / "best" / "LD" / "LD.json") as json_fp:
+            json_file = json.load(json_fp)
             thresholds = {
                 "LD": float(json_file["LD"]),
                 "on": float(json_file["positive_threshold"]),
@@ -63,14 +64,17 @@ class Controller:
 
         self._playing = False
         self._stop = False
+        self._locks = {"stop": Lock(), "playing": Lock()}
 
         # Start main loop
         glib_loop = GLib.MainLoop()
         glib_loop.run()
 
     def _on_name_vanished(self, manager, name):
+        self._locks["stop"].acquire()
         logging.info("Player vanising...")
         self._stop = True
+        self._locks["stop"].release()
 
     def _on_name_appeared(self, manager, name):
         if name.name != self._desired_player:
@@ -86,15 +90,21 @@ class Controller:
 
     def _on_play(self, player, status):
         logging.info("[PLAY] Setting to True")
+        self._locks["playing"].acquire()
         self._playing = True
+        self._locks["playing"].release()
 
     def _on_pause(self, player, status):
         logging.info("[PAUSE] Setting to False")
+        self._locks["playing"].acquire()
         self._playing = False
+        self._locks["playing"].release()
 
     def _on_stop(self, player, status):
         logging.info("[STOP] Setting to False")
+        self._locks["playing"].acquire()
         self._playing = False
+        self._locks["playing"].release()
 
     def _detect_and_classify(self, frame) -> Tuple[ClassificationResult, Tuple]:
         bounding_box = self._detector.detect(frame)
@@ -112,25 +122,37 @@ class Controller:
         return classification_result, bounding_box
 
     def _decide(self, classification_result):
-        if self._stop:
-            pass
+        self._locks["stop"].acquire()
+        if not self._stop:
+            if (
+                not self._is_playing()
+                and classification_result is ClassificationResult.HEADPHONES_ON
+            ):
+                logging.info("PLAY")
+                self._player.play()
+            if (
+                self._is_playing()
+                and classification_result is ClassificationResult.HEADPHONES_OFF
+            ):
+                logging.info("PAUSE")
+                self._player.pause()
+        self._locks["stop"].release()
 
-        if (
-            not self._playing
-            and classification_result is ClassificationResult.HEADPHONES_ON
-        ):
-            logging.info("PLAY")
-            self._player.play()
-        if (
-            self._playing
-            and classification_result is ClassificationResult.HEADPHONES_OFF
-        ):
-            logging.info("PAUSE")
-            self._player.pause()
+    def _is_stopped(self):
+        self._locks["stop"].acquire()
+        stop = self._stop
+        self._locks["stop"].release()
+        return stop
+
+    def _is_playing(self):
+        self._locks["playing"].acquire()
+        playing = self._playing
+        self._locks["playing"].release()
+        return playing
 
     def _start(self):
         with self._stream:
-            while not self._stop:
+            while not self._is_stopped():
                 classification_result = ClassificationResult.UNKNOWN
                 # find the face for the first time in this loop
                 logging.info("Detecting a face...")
@@ -139,7 +161,11 @@ class Controller:
                     frame = self._stream.read()
 
                     # More than 2 seconds without a detected face: pause
-                    if self._playing and time.time() - start > 2 and not self._stop:
+                    if (
+                        self._is_playing()
+                        and time.time() - start > 2
+                        and not self._is_stopped()
+                    ):
                         logging.info("Nobody in front of the camera (?)")
                         self._player.pause()
 
@@ -159,7 +185,7 @@ class Controller:
 
                 try:
                     # Start tracking stream
-                    while not self._stop:
+                    while not self._is_stopped():
                         frame = self._stream.read()
                         classification_result = tracker.track_and_classify(frame)
                         self._decide(classification_result)
@@ -170,8 +196,12 @@ class Controller:
                     logging.info("Unable to classify the input")
 
         # Get ready to restart
+        self._locks["stop"].acquire()
+        self._locks["playing"].acquire()
         self._playing = False
         self._stop = False
+        self._locks["stop"].release()
+        self._locks["playing"].release()
         if self._debug:
             cv2.destroyAllWindows()
 

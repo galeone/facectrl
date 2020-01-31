@@ -200,7 +200,7 @@ def get_model() -> tf.keras.Model:
     net = tf.keras.layers.Dense(32, activation=tf.nn.relu)(net)  # encoding
     net = tf.keras.layers.Dense(64, activation=tf.nn.relu)(net)
     net = tf.keras.layers.Dense(128, activation=tf.nn.relu)(net)
-    net = tf.keras.layers.Dense(64 * 64 * 3, activation=tf.nn.sigmoid)(net)
+    net = tf.keras.layers.Dense(64 * 64 * 3, activation=tf.nn.tanh)(net)
     reconstructions = tf.keras.layers.Reshape((64, 64, 3))(net)
 
     model = tf.keras.Model(inputs=inputs, outputs=reconstructions)
@@ -224,6 +224,16 @@ def _to_ashpy_format(image: tf.Tensor) -> (tf.Tensor, tf.Tensor):
     # minimize the reconstruction error, we can pass image as labels
     # and use the classifierloss wit the mse loss inside.
     return image, image
+
+
+def _squash(image: tf.Tensor) -> tf.Tensor:
+    """Given an image in [0,1] squash its values in [-1,1]"""
+    return (image - 0.5) * 2.0  # [-1, 1] range
+
+
+def _normalize(image: tf.Tensor) -> tf.Tensor:
+    """Given an image in [-1,1] squash its values in [0,1]"""
+    return (image + 1.0) / 2.0
 
 
 def _augment(image: tf.Tensor) -> tf.Tensor:
@@ -265,7 +275,7 @@ def _build_dataset(
     dataset = tf.data.Dataset.list_files(str(glob_path)).map(_to_image)
     if augmentation:
         dataset = dataset.map(_augment).unbatch().shuffle(100)
-
+    dataset = dataset.map(_squash)  # in [-1, 1] range
     return dataset.map(_to_ashpy_format).cache().batch(batch_size).prefetch(1)
 
 

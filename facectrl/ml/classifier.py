@@ -49,11 +49,12 @@ class Classifier:
             face (tf.Tensor): the post-processed face, float32, 64x64. In RGB.
         """
         crop = tf.convert_to_tensor(crop)
-        rgb = tf.reverse(crop, axis=[-1])
-        return tf.expand_dims(
-            tf.image.resize(tf.image.convert_image_dtype(rgb, tf.float32), (64, 64)),
-            axis=[0],
-        )
+        rgb = tf.reverse(crop, axis=[-1])  # 0,255
+        # Convert to [0,1]
+        rgb = tf.image.convert_image_dtype(rgb, tf.float32)
+        # Convert to [-1,1]
+        rgb = (rgb - 0.5) * 2.0
+        return tf.expand_dims(tf.image.resize(rgb, (64, 64)), axis=[0],)
 
     @property
     def autoencoder(self) -> tf.keras.Model:
@@ -65,6 +66,11 @@ class Classifier:
         """Get the thresholds currently in use."""
         return self._thresholds
 
+    @staticmethod
+    def normalize(image: tf.Tensor) -> tf.Tensor:
+        """Given image in [-1,1] returns image in [0,1]."""
+        return (image + 1.0) / 2.0
+
     def __call__(self, face: tf.Tensor) -> ClassificationResult:
         """Using the autoencoder and the thresholds, do the classifcation of the face.
         Args:
@@ -73,7 +79,9 @@ class Classifier:
             ClassificationResult: the result of the classification.
         """
         classified = ClassificationResult.UNKNOWN
-        reconstruction = self._autoencoder(face)  # RGB images
+        reconstruction = self._autoencoder(
+            face
+        )  # face and reconstructions have values in [-1,1]
         mse = self._mse(face, reconstruction).numpy()
 
         on_sigma = self._thresholds["on_variance"]
@@ -93,7 +101,8 @@ class Classifier:
                     "reconstruction",
                     tf.squeeze(
                         tf.image.convert_image_dtype(
-                            tf.reverse(reconstruction, axis=[-1]), tf.uint8
+                            tf.reverse(self.normalize(reconstruction), axis=[-1]),
+                            tf.uint8,
                         )
                     ).numpy(),
                 )
@@ -101,7 +110,7 @@ class Classifier:
                     "input",
                     tf.squeeze(
                         tf.image.convert_image_dtype(
-                            tf.reverse(face, axis=[-1]), tf.uint8
+                            tf.reverse(self.normalize(face), axis=[-1]), tf.uint8
                         )
                     ).numpy(),
                 )

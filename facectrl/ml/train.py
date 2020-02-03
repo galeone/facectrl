@@ -234,12 +234,23 @@ def get_model() -> tf.keras.Model:
     # encoding, representation = autoencoder(input)
     inputs = tf.keras.layers.Input(shape=(64, 64, 3))
     net = tf.keras.layers.Flatten()(inputs)
-    net = tf.keras.layers.Dense(128, activation=tf.nn.relu)(net)
-    net = tf.keras.layers.Dense(64, activation=tf.nn.relu)(net)
-    net = tf.keras.layers.Dense(32, activation=tf.nn.relu)(net)  # encoding
-    net = tf.keras.layers.Dense(64, activation=tf.nn.relu)(net)
-    net = tf.keras.layers.Dense(128, activation=tf.nn.relu)(net)
-    net = tf.keras.layers.Dense(64 * 64 * 3, activation=tf.nn.tanh)(net)
+    net = tf.keras.layers.Dense(64)(net)
+    net = tf.keras.layers.Activation(tf.nn.relu)(net)
+
+    net = tf.keras.layers.Dense(32)(net)
+    net = tf.keras.layers.Activation(tf.nn.relu)(net)
+
+    net = tf.keras.layers.Dense(16)(net)  # encoding
+    net = tf.keras.layers.Activation(tf.nn.relu)(net)
+
+    net = tf.keras.layers.Dense(32)(net)
+    net = tf.keras.layers.Activation(tf.nn.relu)(net)
+
+    net = tf.keras.layers.Dense(64)(net)
+    net = tf.keras.layers.Activation(tf.nn.relu)(net)
+
+    net = tf.keras.layers.Dense(64 * 64 * 3)(net)
+    net = tf.keras.layers.Activation(tf.nn.tanh)(net)
     reconstructions = tf.keras.layers.Reshape((64, 64, 3))(net)
 
     model = tf.keras.Model(inputs=inputs, outputs=reconstructions)
@@ -313,9 +324,14 @@ def _build_dataset(
     """
     dataset = tf.data.Dataset.list_files(str(glob_path)).map(_to_image)
     if augmentation:
-        dataset = dataset.map(_augment).unbatch().shuffle(100)
+        dataset = dataset.map(_augment).unbatch()
     dataset = dataset.map(_squash)  # in [-1, 1] range
-    return dataset.map(_to_ashpy_format).cache().batch(batch_size).prefetch(1)
+    dataset = dataset.map(_to_ashpy_format).cache()
+    # agumentation == training -> shuffle the elemenents of the new dataset
+    # after the .cache() step
+    if augmentation:
+        dataset = dataset.shuffle(100)
+    return dataset.batch(batch_size).prefetch(1)
 
 
 def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> None:

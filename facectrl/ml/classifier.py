@@ -14,6 +14,8 @@ import cv2
 import numpy as np
 import tensorflow as tf
 
+from facectrl.ml.model import CVAE
+
 
 class ClassificationResult(Enum):
     """A possible classification result."""
@@ -23,30 +25,65 @@ class ClassificationResult(Enum):
     UNKNOWN = auto()
 
 
+class Thresholds:
+    """The thresholds learned by the cvae."""
+
+    def __init__(self, on: Dict, off: Dict):
+        """The thresholds to use,
+        in the format {"mean": value, "variance: value}."""
+        keys = {"mean", "variance"}
+        if keys != set(on.keys()) or keys != set(off.keys()):
+            raise ValueError("Wrong threshold format, exepected mean,variance keys.")
+        self._on = on
+        self._off = off
+
+    @property
+    def difference(self):
+        """Absolute distance between positive and negative mean values."""
+        return abs(self.on["mean"] - self.off["mean"])
+
+    @property
+    def on(self):
+        return self._on
+
+    @property
+    def off(self):
+        return self._off
+
+    def asdict(self) -> Dict:
+        return {
+            "positive_threshold": self._on["mean"].item(),
+            "positive_variance": self._on["variance"].item(),
+            "negative_threshold": self._off["mean"].item(),
+            "negative_variance": self._off["variance"].item(),
+        }
+
+
 class Classifier:
     """The Classifier object implements all the logic to trigger a detection.
     Args:
-        autoencoder (tf.keras.Model): the previously trained autoencoder.
-        thresholds (dict): the dictionary containing the learned thresholds
+        cvae (tf.keras.Model): the previously trained cvae.
+        thresholds (Thresholds): the dictionary containing the learned thresholds
                            (model selection result).
         debug (bool): when True, it enables the opencv visualization.
     """
 
-    def __init__(
-        self, autoencoder: tf.keras.Model, thresholds: Dict, debug: bool = False
-    ) -> None:
-        self._autoencoder = autoencoder
+    def __init__(self, cvae: CVAE, thresholds: Thresholds, debug: bool = False) -> None:
+        self._cvae = cvae
         self._thresholds = thresholds
-        self._mse = tf.keras.losses.MeanSquaredError()
+        # mse that keeps the batch size
+        self._mse = lambda a, b: tf.math.reduce_mean(
+            tf.math.squared_difference(a, b), axis=[1, 2, 3]
+        )
         self._debug = debug
 
     @staticmethod
     def preprocess(crop: np.array) -> tf.Tensor:
         """The preprocessing operation to apply, before feeding the image to the classifier.
         Args:
-            crop (np.array): a BGR image.
+            crop (np.array): a BGR image. np.uin8
         Return:
-            face (tf.Tensor): the post-processed face, float32, 64x64. In RGB.
+            face (tf.Tensor): the post-processed face, tf.float32, 64x64. RGB.
         """
         crop = tf.convert_to_tensor(crop)
         rgb = tf.reverse(crop, axis=[-1])  # 0,255
@@ -54,15 +91,18 @@ class Classifier:
         rgb = tf.image.convert_image_dtype(rgb, tf.float32)
         # Convert to [-1,1]
         rgb = (rgb - 0.5) * 2.0
-        return tf.expand_dims(tf.image.resize(rgb, (64, 64)), axis=[0],)
+        rgb = tf.image.resize(rgb, (64, 64))
+        if tf.equal(tf.rank(rgb), 3):
+            return tf.expand_dims(rgb, axis=[0])
+        return rgb
 
     @property
-    def autoencoder(self) -> tf.keras.Model:
-        """Get the autoencoder currently in use."""
-        return self._autoencoder
+    def cvae(self) -> CVAE:
+        """Get the cvae currently in use."""
+        return self._cvae
 
     @property
-    def thresholds(self) -> Dict:
+    def thresholds(self) -> Thresholds:
         """Get the thresholds currently in use."""
         return self._thresholds
 
@@ -72,54 +112,72 @@ class Classifier:
         return (image + 1.0) / 2.0
 
     def __call__(self, face: tf.Tensor) -> ClassificationResult:
-        """Using the autoencoder and the thresholds, do the classifcation of the face.
+        """Using the cvae and the thresholds, do the classifcation of the face.
         Args:
             face (tf.Tensor): the cropped tensor (use Classifier.preprocess)
         Return:
             ClassificationResult: the result of the classification.
         """
-        classified = ClassificationResult.UNKNOWN
-        reconstruction = self._autoencoder(
+
+        # if needed, ad batch size
+        if tf.equal(tf.rank(face), 3):
+            face = tf.expand_dims(face, axis=[0])
+
+        classified = np.array(
+            [ClassificationResult.UNKNOWN] * tf.shape(face)[0].numpy()
+        )
+        reconstruction = self._cvae.reconstruct(
             face
         )  # face and reconstructions have values in [-1,1]
         mse = self._mse(face, reconstruction).numpy()
 
-        on_sigma = self._thresholds["on_variance"]
-        off_sigma = self._thresholds["off_variance"]
+        on_sigma = self._thresholds.on["variance"]
+        off_sigma = self._thresholds.off["variance"]
 
-        if mse - on_sigma - self._thresholds["LD"] <= self._thresholds["on"]:
-            classified = ClassificationResult.HEADPHONES_ON
-
-        if mse + off_sigma >= self._thresholds["off"]:
-            classified = ClassificationResult.HEADPHONES_OFF
-
-        if classified != ClassificationResult.UNKNOWN:
-            logging.info("Classified as: %s with mse %f", classified, mse)
-            if self._debug:
-                # tf.reverse to go from RGB to BGR
-                cv2.imshow(
-                    "reconstruction",
-                    tf.squeeze(
-                        tf.image.convert_image_dtype(
-                            tf.reverse(self.normalize(reconstruction), axis=[-1]),
-                            tf.uint8,
-                        )
-                    ).numpy(),
-                )
-                cv2.imshow(
-                    "input",
-                    tf.squeeze(
-                        tf.image.convert_image_dtype(
-                            tf.reverse(self.normalize(face), axis=[-1]), tf.uint8
-                        )
-                    ).numpy(),
-                )
-        else:
-            logging.info(
-                "Unable to classify the input. mse %s is outside of positive %f and negative %f",
-                mse,
-                self._thresholds["on"],
-                self._thresholds["off"],
+        classified[
+            np.logical_and(
+                mse >= (self._thresholds.on["mean"] - 3 * on_sigma),
+                mse <= (self._thresholds.on["mean"] + 3 * on_sigma),
             )
+        ] = ClassificationResult.HEADPHONES_ON
+        classified[
+            np.logical_and(
+                mse >= (self._thresholds.off["mean"] - 3 * off_sigma),
+                mse <= (self._thresholds.off["mean"] + 3 * off_sigma),
+            )
+        ] = ClassificationResult.HEADPHONES_OFF
+
+        for idx, element in enumerate(classified):
+            if element != ClassificationResult.UNKNOWN:
+                logging.info("Classified as: %s with mse %f", element, mse[idx])
+                if self._debug:
+                    # tf.reverse to go from RGB to BGR
+                    cv2.imshow(
+                        "reconstruction",
+                        tf.squeeze(
+                            tf.image.convert_image_dtype(
+                                tf.reverse(
+                                    self.normalize(reconstruction[idx]), axis=[-1]
+                                ),
+                                tf.uint8,
+                            )
+                        ).numpy(),
+                    )
+                    cv2.imshow(
+                        "input",
+                        tf.squeeze(
+                            tf.image.convert_image_dtype(
+                                tf.reverse(self.normalize(face[idx]), axis=[-1]),
+                                tf.uint8,
+                            )
+                        ).numpy(),
+                    )
+            else:
+                logging.info(
+                    "Unable to classify the input. mse %s is outside of positive %f and negative %f",
+                    mse,
+                    self._thresholds.on["mean"],
+                    self._thresholds.off["mean"],
+                )
 
         return classified

@@ -19,11 +19,17 @@ from shutil import copyfile
 from typing import Callable, Dict
 
 import ashpy
+import numpy as np
 import tensorflow as tf
+from ashpy.contexts import ClassifierContext
 from ashpy.losses.classifier import ClassifierLoss
+from ashpy.losses.executor import Executor
 from ashpy.modes import LogEvalMode
 from ashpy.restorers.classifier import ClassifierRestorer
 from ashpy.trainers.classifier import ClassifierTrainer
+
+from facectrl.ml.classifier import ClassificationResult, Classifier, Thresholds
+from facectrl.ml.model import CVAE
 
 
 class ReconstructionLoss(ashpy.metrics.Metric):
@@ -61,7 +67,7 @@ class ReconstructionLoss(ashpy.metrics.Metric):
 
         self._mse = tf.keras.losses.MeanSquaredError()
         self._dataset = dataset
-        self.mean, self.variance = None, None
+        self.mean, self.variance = tf.nn.moments(tf.zeros((1, 1)), axes=[0])
         self.inputs, self.reconstructions = None, None
 
     def update_state(self, context: ashpy.contexts.ClassifierContext) -> None:
@@ -75,9 +81,7 @@ class ReconstructionLoss(ashpy.metrics.Metric):
         """
         values = []
         for images, _ in self._dataset:
-            reconstructions = context.classifier_model(
-                images, training=context.log_eval_mode == LogEvalMode.TRAIN
-            )
+            reconstructions = context.classifier_model.reconstruct(images)
 
             mse = self._mse(images, reconstructions)
             values.append(mse)
@@ -91,8 +95,8 @@ class ReconstructionLoss(ashpy.metrics.Metric):
         self.mean, self.variance = tf.nn.moments(tf.stack(values), axes=[0])
 
 
-class LD(ashpy.metrics.Metric):
-    """Computes the LD (loss discrepancy) using the passed dataset."""
+class AEAccuracy(ashpy.metrics.Metric):
+    """Computes the AutoEncoder (AE) classification accuracy using the passed datasets."""
 
     def __init__(
         self,
@@ -118,26 +122,47 @@ class LD(ashpy.metrics.Metric):
                 directory.
         """
         super().__init__(
-            name="LD",
-            metric=tf.keras.metrics.Mean(),
+            name="AEAccuracy",
+            metric=tf.keras.metrics.Accuracy(),
             model_selection_operator=model_selection_operator,
             logdir=logdir,
         )
 
         self._mse = tf.keras.losses.MeanSquaredError()
         self._mean_positive_loss = ReconstructionLoss(
-            positive_dataset, logdir=logdir, name="PositiveLoss"
+            positive_dataset, logdir=logdir, name="mse/positive"
         )
         self._mean_negative_loss = ReconstructionLoss(
-            negative_dataset, logdir=logdir, name="NegativeLoss"
+            negative_dataset, logdir=logdir, name="mse/negative"
         )
         self._positive_dataset = positive_dataset
         self._negative_dataset = negative_dataset
 
-        self._positive_th = -1.0
-        self._negative_th = -1.0
-        self._positive_variance = 0.0
-        self._negative_variance = 0.0
+        self._thresholds = Thresholds(
+            on={
+                "mean": self._mean_positive_loss.result(),
+                "variance": self._mean_negative_loss.variance.numpy(),
+            },
+            off={
+                "mean": self._mean_negative_loss.result(),
+                "variance": self._mean_negative_loss.variance.numpy(),
+            },
+        )
+        batch_size = next(iter(self._positive_dataset.take(1)))[0].shape[0]
+
+        def _positive(x, y):
+            return x, 1
+
+        def _negative(x, y):
+            return x, 0
+
+        self._full_dataset = (
+            self._positive_dataset.unbatch()
+            .map(_positive)
+            .concatenate(self._negative_dataset.unbatch().map(_negative))
+            .shuffle(100)
+            .batch(batch_size)
+        )
 
     def update_state(self, context: ashpy.contexts.ClassifierContext) -> None:
         """
@@ -148,23 +173,38 @@ class LD(ashpy.metrics.Metric):
                 all the information the Metric needs.
 
         """
+
+        # Compute the loss on positive and negative dataset
         self._mean_negative_loss.update_state(context)
         self._mean_positive_loss.update_state(context)
 
-        self._distribute_strategy.experimental_run(
-            lambda: self._metric.update_state(
-                tf.math.abs(
-                    self._mean_negative_loss.result()
-                    - self._mean_positive_loss.result()
-                )
-            )
+        # Use the mean and variance to classify the full dataset
+        self._thresholds = Thresholds(
+            on={
+                "mean": self._mean_positive_loss.result(),
+                "variance": self._mean_negative_loss.variance.numpy(),
+            },
+            off={
+                "mean": self._mean_negative_loss.result(),
+                "variance": self._mean_negative_loss.variance.numpy(),
+            },
         )
-        self._positive_th = self._mean_positive_loss.result()
-        self._positive_variance = self._mean_positive_loss.variance.numpy()
 
-        self._negative_th = self._mean_negative_loss.result()
-        self._negative_variance = self._mean_negative_loss.variance.numpy()
+        classifier = Classifier(
+            cvae=context.classifier_model, thresholds=self._thresholds
+        )
+        for images, y_true in self._full_dataset:
+            reconstructions = context.classifier_model.reconstruct(images)
+            y_pred = classifier(reconstructions)
+            y_pred[y_pred == ClassificationResult.HEADPHONES_ON] = 1
+            y_pred[y_pred == ClassificationResult.HEADPHONES_OFF] = 0
+            y_pred[y_pred == ClassificationResult.UNKNOWN] = -1
+            y_pred = tf.stack(y_pred)
+            self._distribute_strategy.experimental_run(
+                lambda: self._metric.update_state(y_true, y_pred)
+            )
 
+        # reset the states of the ReconstructionLoss metrics
         self._mean_negative_loss.reset_states()
         self._mean_positive_loss.reset_states()
 
@@ -181,16 +221,7 @@ class LD(ashpy.metrics.Metric):
         """
 
         super().json_write(
-            filename,
-            {
-                **what_to_write,
-                **{
-                    "positive_threshold": self._positive_th,
-                    "positive_variance": self._positive_variance,
-                    "negative_threshold": self._negative_th,
-                    "negative_variance": self._negative_variance,
-                },
-            },
+            filename, {**what_to_write, **self._thresholds.asdict()},
         )
 
     def log(self, step: int) -> None:
@@ -228,33 +259,63 @@ class LD(ashpy.metrics.Metric):
             step=step,
         )
 
+        tf.summary.scalar("positive/mean", self._thresholds.on["mean"], step=step)
+        tf.summary.scalar(
+            "positive/variance", self._thresholds.on["variance"], step=step
+        )
+        tf.summary.scalar("negative/mean", self._thresholds.off["mean"], step=step)
+        tf.summary.scalar(
+            "negative/variance", self._thresholds.off["variance"], step=step
+        )
 
-def get_model() -> tf.keras.Model:
-    """Create a new autoencoder tf.keras.Model."""
-    # encoding, representation = autoencoder(input)
-    inputs = tf.keras.layers.Input(shape=(64, 64, 3))
-    net = tf.keras.layers.Flatten()(inputs)
-    net = tf.keras.layers.Dense(64)(net)
-    net = tf.keras.layers.Activation(tf.nn.relu)(net)
 
-    net = tf.keras.layers.Dense(32)(net)
-    net = tf.keras.layers.Activation(tf.nn.relu)(net)
+class MaximizeELBO(Executor):
+    r"""Maximizes the Evidence Lowe BOund (ELBO)"""
 
-    net = tf.keras.layers.Dense(16)(net)  # encoding
-    net = tf.keras.layers.Activation(tf.nn.relu)(net)
+    def __init__(self) -> None:
+        r"""
+        Initialize :py:class:`MaximizeELBO`.
 
-    net = tf.keras.layers.Dense(32)(net)
-    net = tf.keras.layers.Activation(tf.nn.relu)(net)
+        Returns:
+            :py:obj:`None`
+        """
+        super().__init__()
 
-    net = tf.keras.layers.Dense(64)(net)
-    net = tf.keras.layers.Activation(tf.nn.relu)(net)
+    @staticmethod
+    def log_normal_pdf(sample, mean, logvar, raxis=1):
+        log2pi = tf.math.log(2.0 * np.pi)
+        return tf.reduce_sum(
+            -0.5 * ((sample - mean) ** 2.0 * tf.exp(-logvar) + logvar + log2pi),
+            axis=raxis,
+        )
 
-    net = tf.keras.layers.Dense(64 * 64 * 3)(net)
-    net = tf.keras.layers.Activation(tf.nn.tanh)(net)
-    reconstructions = tf.keras.layers.Reshape((64, 64, 3))(net)
+    @Executor.reduce_loss
+    def call(
+        self, context: ClassifierContext, *, features: tf.Tensor, **kwargs,
+    ) -> tf.Tensor:
+        r"""
+        Compute the loss.
+        Args:
+            context (:py:class:`ashpy.ClassifierContext`): Context for classification.
+            features (:py:class:`tf.Tensor`): Inputs for the VAE.
+            **kwargs:
+        Returns:
+            :py:class:`tf.Tensor`: Loss value.
+        """
+        mean, logvar = context.classifier_model.encode(features)
+        z = context.classifier_model.reparameterize(mean, logvar)
+        reconstructions = context.classifier_model.decode(z)
 
-    model = tf.keras.Model(inputs=inputs, outputs=reconstructions)
-    return model
+        mse = tf.reduce_mean(
+            tf.math.squared_difference(reconstructions, features), axis=[1, 2, 3]
+        )
+        logpz = self.log_normal_pdf(z, 0.0, 0.0)
+        logqz_x = self.log_normal_pdf(z, mean, logvar)
+        loss_per_element = -1.0 * (logpz - logqz_x) + mse  # (batch_size,)
+        # Support for AshPy distribute computation (reduction strategy)
+        # loss has shape [batch_size], we need [batch_size, 1]
+        loss = tf.expand_dims(loss_per_element, axis=-1)
+        return tf.reduce_mean(loss, axis=[1], keepdims=True)
 
 
 def _to_image(filename: str) -> tf.Tensor:
@@ -270,7 +331,7 @@ def _to_image(filename: str) -> tf.Tensor:
 def _to_ashpy_format(image: tf.Tensor) -> (tf.Tensor, tf.Tensor):
     """Given an image, returns the pair (image, image)."""
     # ashpy expects the format: features, labels.
-    # Since we are traingn an autoencoder, and we want to
+    # Since we are traingn a cvae, and we want to
     # minimize the reconstruction error, we can pass image as labels
     # and use the classifierloss wit the mse loss inside.
     return image, image
@@ -335,7 +396,7 @@ def _build_dataset(
 
 
 def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> None:
-    """Train the model obtained with get_model().
+    """Train the CVAE model.
     Args:
         dataset_path (Path): path of the dataset containing the headphone on/off pics.
         batch_size (int): the batch size.
@@ -355,31 +416,28 @@ def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> Non
         for key in keys
     }
 
-    reconstruction_error = ClassifierLoss(tf.keras.losses.MeanSquaredError())
-    autoencoder = get_model()
-    autoencoder.summary()
+    cvae = CVAE()
+    # define the model by passing a dummy input
+    # the call method of the CVAE is the reconstruction
+    # autoencoder-lik
+    cvae(tf.zeros((1, 64, 64, 3)))
+    cvae.summary()
 
     trainer = ClassifierTrainer(
-        model=autoencoder,
+        model=cvae,
         # we are intrested only in the performance on unseen data.
         # Thus we measure the metrics on the validation datasets only
         # The only metric that is reallu measure both in training and validation
         # is the loss (executed automatically by ashpy)
         metrics=[
-            LD(
+            AEAccuracy(
                 validation_datasets["on"],
                 validation_datasets["off"],
                 model_selection_operator=operator.gt,
-            ),
-            ReconstructionLoss(
-                validation_datasets["on"], logdir=logdir, name="PositiveLoss"
-            ),
-            ReconstructionLoss(
-                validation_datasets["off"], logdir=logdir, name="NegativeLoss"
-            ),
+            )
         ],
         optimizer=tf.optimizers.Adam(1e-4),
-        loss=reconstruction_error,
+        loss=MaximizeELBO(),
         logdir=str(logdir / "on"),
         epochs=epochs,
     )
@@ -387,12 +445,12 @@ def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> Non
     trainer(training_datasets["on"], validation_datasets["on"])
 
     # Restore the best model and save it as a SavedModel
-    best_path = logdir / "on" / "best" / "LD"
-    autoencoder = ClassifierRestorer(str(best_path)).restore_model(autoencoder)
+    best_path = logdir / "on" / "best" / "AEAccuracy"
+    cvae = ClassifierRestorer(str(best_path)).restore_model(cvae)
 
     dest_path = logdir / "on" / "saved"
-    autoencoder.save(str(dest_path))
-    copyfile(best_path / "LD.json", dest_path / "LD.json")
+    cvae.save(str(dest_path))
+    copyfile(best_path / "AEAccuracy.json", dest_path / "AEAccuracy.json")
 
 
 def main() -> int:

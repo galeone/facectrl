@@ -20,7 +20,8 @@ import gi
 import tensorflow as tf
 from gi.repository import GLib, Playerctl
 
-from facectrl.ml import ClassificationResult, Classifier, FaceDetector
+from facectrl.ml import (ClassificationResult, Classifier, FaceDetector,
+                         Thresholds)
 from facectrl.video import Tracker, VideoStream
 
 
@@ -46,15 +47,18 @@ class Controller:
         self._detector = detector
         self._debug = debug
 
-        with open(logdir / "on" / "best" / "LD" / "LD.json") as json_fp:
+        with open(logdir / "on" / "best" / "AEAccuracy" / "AEAccuracy.json") as json_fp:
             json_file = json.load(json_fp)
-            thresholds = {
-                "LD": float(json_file["LD"]),
-                "on": float(json_file["positive_threshold"]),
-                "on_variance": float(json_file["positive_variance"]),
-                "off": float(json_file["negative_threshold"]),
-                "off_variance": float(json_file["negative_variance"]),
-            }
+            thresholds = Thresholds(
+                on={
+                    "mean": float(json_file["positive_threshold"]),
+                    "variance": float(json_file["positive_variance"]),
+                },
+                off={
+                    "mean": float(json_file["negative_threshold"]),
+                    "variance": float(json_file["negative_variance"]),
+                },
+            )
 
         self._classifier = Classifier(
             autoencoder=tf.keras.models.load_model(str(logdir / "on" / "saved")),

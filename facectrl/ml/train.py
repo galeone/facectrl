@@ -150,19 +150,21 @@ class AEAccuracy(ashpy.metrics.Metric):
         )
         batch_size = next(iter(self._positive_dataset.take(1)))[0].shape[0]
 
-        def _positive(x, y):
-            return x, 1
-
-        def _negative(x, y):
-            return x, 0
-
         self._full_dataset = (
             self._positive_dataset.unbatch()
-            .map(_positive)
-            .concatenate(self._negative_dataset.unbatch().map(_negative))
+            .map(self._positive)
+            .concatenate(self._negative_dataset.unbatch().map(self._negative))
             .shuffle(100)
             .batch(batch_size)
         )
+
+    @staticmethod
+    def _positive(x, y):
+        return x, 1
+
+    @staticmethod
+    def _negative(x, y):
+        return x, 0
 
     def update_state(self, context: ashpy.contexts.ClassifierContext) -> None:
         """
@@ -233,29 +235,29 @@ class AEAccuracy(ashpy.metrics.Metric):
         super().log(step)
         tf.summary.image(
             "positive",
-            _normalize(
-                tf.concat(
-                    [
-                        self._mean_positive_loss.inputs,
-                        self._mean_positive_loss.reconstructions,
-                    ],
-                    axis=2,
-                )
+            # DatasetBuilder.normalize(
+            tf.concat(
+                [
+                    self._mean_positive_loss.inputs,
+                    self._mean_positive_loss.reconstructions,
+                ],
+                axis=2,
             ),
+            # ),
             step=step,
         )
 
         tf.summary.image(
             "negative",
-            _normalize(
-                tf.concat(
-                    [
-                        self._mean_negative_loss.inputs,
-                        self._mean_negative_loss.reconstructions,
-                    ],
-                    axis=2,
-                )
+            # DatasetBuilder.normalize(
+            tf.concat(
+                [
+                    self._mean_negative_loss.inputs,
+                    self._mean_negative_loss.reconstructions,
+                ],
+                axis=2,
             ),
+            # ),
             step=step,
         )
 
@@ -306,93 +308,95 @@ class MaximizeELBO(Executor):
         z = context.classifier_model.reparameterize(mean, logvar)
         reconstructions = context.classifier_model.decode(z)
 
-        mse = tf.reduce_mean(
-            tf.math.squared_difference(reconstructions, features), axis=[1, 2, 3]
+        cross_ent = tf.nn.sigmoid_cross_entropy_with_logits(
+            logits=reconstructions, labels=features
         )
+        logpx_z = -tf.reduce_sum(cross_ent, axis=[1, 2, 3])
         logpz = self.log_normal_pdf(z, 0.0, 0.0)
         logqz_x = self.log_normal_pdf(z, mean, logvar)
-        loss_per_element = -1.0 * (logpz - logqz_x) + mse  # (batch_size,)
+        loss_per_element = -(logpx_z + logpz - logqz_x)  # (batch_size,)
         # Support for AshPy distribute computation (reduction strategy)
         # loss has shape [batch_size], we need [batch_size, 1]
-        loss = tf.expand_dims(loss_per_element, axis=-1)
-        return tf.reduce_mean(loss, axis=[1], keepdims=True)
+        # return tf.expand_dims(loss_per_element, axis=-1)
+        return loss_per_element
 
 
-def _to_image(filename: str) -> tf.Tensor:
-    """Read the image from the path, and returns the resizes (64x64) image."""
+class DatasetBuilder:
+    @staticmethod
+    def _to_image(filename: str) -> tf.Tensor:
+        """Read the image from the path, and returns the resizes (64x64) image."""
 
-    image = tf.io.read_file(filename)
-    image = tf.image.decode_png(image)
-    image = tf.image.convert_image_dtype(image, tf.float32)
-    image = tf.image.resize(image, (64, 64))
-    return image
+        image = tf.io.read_file(filename)
+        image = tf.image.decode_png(image)
+        image = tf.image.convert_image_dtype(image, tf.float32)
+        image = tf.image.resize(image, (64, 64))
+        return image
 
+    @staticmethod
+    def _to_ashpy_format(image: tf.Tensor) -> (tf.Tensor, tf.Tensor):
+        """Given an image, returns the pair (image, image)."""
+        # ashpy expects the format: features, labels.
+        # Since we are traingn a cvae, and we want to
+        # minimize the reconstruction error, we can pass image as labels
+        # and use the classifierloss wit the mse loss inside.
+        return image, image
 
-def _to_ashpy_format(image: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-    """Given an image, returns the pair (image, image)."""
-    # ashpy expects the format: features, labels.
-    # Since we are traingn a cvae, and we want to
-    # minimize the reconstruction error, we can pass image as labels
-    # and use the classifierloss wit the mse loss inside.
-    return image, image
+    @staticmethod
+    def squash(image: tf.Tensor) -> tf.Tensor:
+        """Given an image in [0,1] squash its values in [-1,1]"""
+        return (image - 0.5) * 2.0  # [-1, 1] range
 
+    @staticmethod
+    def normalize(image: tf.Tensor) -> tf.Tensor:
+        """Given an image in [-1,1] squash its values in [0,1]"""
+        return (image + 1.0) / 2.0
 
-def _squash(image: tf.Tensor) -> tf.Tensor:
-    """Given an image in [0,1] squash its values in [-1,1]"""
-    return (image - 0.5) * 2.0  # [-1, 1] range
+    @staticmethod
+    def augment(image: tf.Tensor) -> tf.Tensor:
+        """Given an image, returns a batch with all the tf.image.random*
+        transformation applied.
+        Args:
+            image (tf.Tensor): the input image, 3D tensor.
 
+        Returns:
+            images (tf.Tensor): 4D tensor.
+        """
+        return tf.stack(
+            [
+                tf.image.random_flip_left_right(image),
+                tf.image.random_contrast(image, lower=0.1, upper=0.6),
+                tf.image.random_hue(image, max_delta=0.2),
+                tf.image.random_brightness(image, max_delta=0.2),
+                tf.image.random_saturation(image, lower=0.1, upper=0.6),
+                tf.image.random_jpeg_quality(
+                    image, min_jpeg_quality=20, max_jpeg_quality=100
+                ),
+            ]
+        )
 
-def _normalize(image: tf.Tensor) -> tf.Tensor:
-    """Given an image in [-1,1] squash its values in [0,1]"""
-    return (image + 1.0) / 2.0
-
-
-def _augment(image: tf.Tensor) -> tf.Tensor:
-    """Given an image, returns a batch with all the tf.image.random*
-    transformation applied.
-    Args:
-        image (tf.Tensor): the input image, 3D tensor.
-
-    Returns:
-        images (tf.Tensor): 4D tensor.
-    """
-    return tf.stack(
-        [
-            tf.image.random_flip_left_right(image),
-            tf.image.random_contrast(image, lower=0.1, upper=0.6),
-            tf.image.random_hue(image, max_delta=0.2),
-            tf.image.random_brightness(image, max_delta=0.2),
-            tf.image.random_saturation(image, lower=0.1, upper=0.6),
-            tf.image.random_jpeg_quality(
-                image, min_jpeg_quality=20, max_jpeg_quality=100
-            ),
-        ]
-    )
-
-
-def _build_dataset(
-    glob_path: Path, batch_size, augmentation: bool = False
-) -> tf.data.Dataset:
-    """Read all the images in the glob_path, and optionally applies
-    the data agumentation step.
-    Args:
-        glob_path (Path): the path of the captured images, with a glob pattern.
-        batch_size (int): the batch size.
-        augmentation(bool): when True, applies data agumentation and increase the
-                            dataset size.
-    Returns:
-        the tf.data.Dataset
-    """
-    dataset = tf.data.Dataset.list_files(str(glob_path)).map(_to_image)
-    if augmentation:
-        dataset = dataset.map(_augment).unbatch()
-    dataset = dataset.map(_squash)  # in [-1, 1] range
-    dataset = dataset.map(_to_ashpy_format).cache()
-    # agumentation == training -> shuffle the elemenents of the new dataset
-    # after the .cache() step
-    if augmentation:
-        dataset = dataset.shuffle(100)
-    return dataset.batch(batch_size).prefetch(1)
+    def __call__(
+        self, glob_path: Path, batch_size: int, augmentation: bool = False
+    ) -> tf.data.Dataset:
+        """Read all the images in the glob_path, and optionally applies
+        the data agumentation step.
+        Args:
+            glob_path (Path): the path of the captured images, with a glob pattern.
+            batch_size (int): the batch size.
+            augmentation(bool): when True, applies data agumentation and increase the
+                                dataset size.
+        Returns:
+            the tf.data.Dataset
+        """
+        dataset = tf.data.Dataset.list_files(str(glob_path)).map(self._to_image)
+        if augmentation:
+            dataset = dataset.map(self.augment).unbatch()
+        # dataset = dataset.map(self.squash)  # in [-1, 1] range
+        dataset = dataset.map(self._to_ashpy_format).cache()
+        # agumentation == training -> shuffle the elemenents of the new dataset
+        # after the .cache() step
+        if augmentation:
+            dataset = dataset.shuffle(100)
+        return dataset.batch(batch_size).prefetch(1)
 
 
 def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> None:
@@ -406,12 +410,18 @@ def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> Non
 
     keys = ["on", "off"]
     training_datasets = {
-        key: _build_dataset(dataset_path / key / "*.png", batch_size, augmentation=True)
+        key: DatasetBuilder()(
+            glob_path=dataset_path / key / "*.png",
+            batch_size=batch_size,
+            augmentation=True,
+        )
         for key in keys
     }
     validation_datasets = {
-        key: _build_dataset(
-            dataset_path / key / "*.png", batch_size, augmentation=False
+        key: DatasetBuilder()(
+            glob_path=dataset_path / key / "*.png",
+            batch_size=batch_size,
+            augmentation=False,
         )
         for key in keys
     }

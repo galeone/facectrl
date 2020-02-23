@@ -54,8 +54,8 @@ class CVAE(tf.keras.Model):
                 ),
                 tf.keras.layers.UpSampling2D((2, 2)),  # 64x64x16
                 tf.keras.layers.Conv2D(
-                    3, (3, 3), activation=tf.nn.tanh, padding="same"
-                ),  # 64x64x3, [-1,1]
+                    3, (3, 3), activation=tf.nn.sigmoid, padding="same"
+                ),  # 64x64x3, [0,1]
             ]
         )
 

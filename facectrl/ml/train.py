@@ -29,7 +29,7 @@ from ashpy.restorers.classifier import ClassifierRestorer
 from ashpy.trainers.classifier import ClassifierTrainer
 
 from facectrl.ml.classifier import ClassificationResult, Classifier, Thresholds
-from facectrl.ml.model import CVAE
+from facectrl.ml.model import VAE
 
 
 class ReconstructionLoss(ashpy.metrics.Metric):
@@ -193,11 +193,11 @@ class AEAccuracy(ashpy.metrics.Metric):
         )
 
         classifier = Classifier(
-            cvae=context.classifier_model, thresholds=self._thresholds
+            vae=context.classifier_model, thresholds=self._thresholds
         )
         for images, y_true in self._full_dataset:
-            reconstructions = context.classifier_model.reconstruct(images)
-            y_pred = classifier(reconstructions)
+
+            y_pred = classifier(images)
             y_pred[y_pred == ClassificationResult.HEADPHONES_ON] = 1
             y_pred[y_pred == ClassificationResult.HEADPHONES_OFF] = 0
             y_pred[y_pred == ClassificationResult.UNKNOWN] = -1
@@ -235,29 +235,29 @@ class AEAccuracy(ashpy.metrics.Metric):
         super().log(step)
         tf.summary.image(
             "positive",
-            # DatasetBuilder.normalize(
-            tf.concat(
-                [
-                    self._mean_positive_loss.inputs,
-                    self._mean_positive_loss.reconstructions,
-                ],
-                axis=2,
+            DatasetBuilder.normalize(
+                tf.concat(
+                    [
+                        self._mean_positive_loss.inputs,
+                        self._mean_positive_loss.reconstructions,
+                    ],
+                    axis=2,
+                )
             ),
-            # ),
             step=step,
         )
 
         tf.summary.image(
             "negative",
-            # DatasetBuilder.normalize(
-            tf.concat(
-                [
-                    self._mean_negative_loss.inputs,
-                    self._mean_negative_loss.reconstructions,
-                ],
-                axis=2,
+            DatasetBuilder.normalize(
+                tf.concat(
+                    [
+                        self._mean_negative_loss.inputs,
+                        self._mean_negative_loss.reconstructions,
+                    ],
+                    axis=2,
+                )
             ),
-            # ),
             step=step,
         )
 
@@ -306,19 +306,17 @@ class MaximizeELBO(Executor):
         """
         mean, logvar = context.classifier_model.encode(features)
         z = context.classifier_model.reparameterize(mean, logvar)
-        reconstructions = context.classifier_model.decode(z)
 
-        cross_ent = tf.nn.sigmoid_cross_entropy_with_logits(
-            logits=reconstructions, labels=features
-        )
-        logpx_z = -tf.reduce_sum(cross_ent, axis=[1, 2, 3])
         logpz = self.log_normal_pdf(z, 0.0, 0.0)
         logqz_x = self.log_normal_pdf(z, mean, logvar)
-        loss_per_element = -(logpx_z + logpz - logqz_x)  # (batch_size,)
-        # Support for AshPy distribute computation (reduction strategy)
-        # loss has shape [batch_size], we need [batch_size, 1]
-        # return tf.expand_dims(loss_per_element, axis=-1)
-        return loss_per_element
+
+        reconstructions = context.classifier_model.decode(z)
+        reconstruction_loss = tf.reduce_sum(
+            tf.math.squared_difference(reconstructions, features), axis=[1, 2, 3]
+        )
+        return -(logpz - logqz_x) + reconstruction_loss
+
+        # return -(logpx_z + kl)  # (batch_size,)
 
 
 class DatasetBuilder:
@@ -336,7 +334,7 @@ class DatasetBuilder:
     def _to_ashpy_format(image: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         """Given an image, returns the pair (image, image)."""
         # ashpy expects the format: features, labels.
-        # Since we are traingn a cvae, and we want to
+        # Since we are traingn a vae, and we want to
         # minimize the reconstruction error, we can pass image as labels
         # and use the classifierloss wit the mse loss inside.
         return image, image
@@ -390,17 +388,14 @@ class DatasetBuilder:
         dataset = tf.data.Dataset.list_files(str(glob_path)).map(self._to_image)
         if augmentation:
             dataset = dataset.map(self.augment).unbatch()
-        # dataset = dataset.map(self.squash)  # in [-1, 1] range
+        dataset = dataset.map(self.squash)  # in [-1, 1] range
         dataset = dataset.map(self._to_ashpy_format).cache()
-        # agumentation == training -> shuffle the elemenents of the new dataset
-        # after the .cache() step
-        if augmentation:
-            dataset = dataset.shuffle(100)
+        dataset = dataset.shuffle(100)
         return dataset.batch(batch_size).prefetch(1)
 
 
 def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> None:
-    """Train the CVAE model.
+    """Train the VAE model.
     Args:
         dataset_path (Path): path of the dataset containing the headphone on/off pics.
         batch_size (int): the batch size.
@@ -426,15 +421,15 @@ def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> Non
         for key in keys
     }
 
-    cvae = CVAE()
+    vae = VAE()
     # define the model by passing a dummy input
-    # the call method of the CVAE is the reconstruction
+    # the call method of the VAE is the reconstruction
     # autoencoder-lik
-    cvae(tf.zeros((1, 64, 64, 3)))
-    cvae.summary()
+    vae(tf.zeros((1, 64, 64, 3)))
+    vae.summary()
 
     trainer = ClassifierTrainer(
-        model=cvae,
+        model=vae,
         # we are intrested only in the performance on unseen data.
         # Thus we measure the metrics on the validation datasets only
         # The only metric that is reallu measure both in training and validation
@@ -456,10 +451,15 @@ def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> Non
 
     # Restore the best model and save it as a SavedModel
     best_path = logdir / "on" / "best" / "AEAccuracy"
-    cvae = ClassifierRestorer(str(best_path)).restore_model(cvae)
+    vae = ClassifierRestorer(str(best_path)).restore_model(vae)
+    # Define the input shape by calling it on fake data
+    vae(tf.zeros((1, 64, 64, 3)))
+    vae.summary()
 
     dest_path = logdir / "on" / "saved"
-    cvae.save(str(dest_path))
+    tf.saved_model.save(vae, str(dest_path))
+    # tf.keras.models.save_model(vae, str(dest_path))
+    # vae.save(str(dest_path))
     copyfile(best_path / "AEAccuracy.json", dest_path / "AEAccuracy.json")
 
 

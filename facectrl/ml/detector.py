@@ -83,7 +83,9 @@ class FaceDetector:
             cropped: BGR image with size, at least (bounding_box[2], bounding_box[3]).
         """
 
-        x, y, width, height = bounding_box  # pylint: disable=invalid-name
+        x, y, width, height = [
+            int(element) for element in bounding_box
+        ]  # pylint: disable=invalid-name
 
         if x < 0:
             x = 0

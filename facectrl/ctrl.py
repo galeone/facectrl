@@ -20,8 +20,7 @@ import gi
 import tensorflow as tf
 from gi.repository import GLib, Playerctl
 
-from facectrl.ml import (ClassificationResult, Classifier, FaceDetector,
-                         Thresholds)
+from facectrl.ml import ClassificationResult, Classifier, FaceDetector, Thresholds
 from facectrl.video import Tracker, VideoStream
 
 
@@ -60,10 +59,9 @@ class Controller:
                 },
             )
 
+        vae = tf.saved_model.load(str(logdir / "on" / "saved"))
         self._classifier = Classifier(
-            autoencoder=tf.keras.models.load_model(str(logdir / "on" / "saved")),
-            thresholds=thresholds,
-            debug=self._debug,
+            vae=vae, thresholds=thresholds, debug=self._debug,
         )
 
         self._playing = False
@@ -212,7 +210,6 @@ class Controller:
 
 def main():
     """Main method, invoked with python -m facectrl.ctrl."""
-    gi.require_version("Playerctl", "2.0")
     logging.basicConfig(level=logging.INFO)
 
     parser = ArgumentParser()

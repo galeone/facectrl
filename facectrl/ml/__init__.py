@@ -10,8 +10,7 @@ The package contains everything needed: models, training loop and dataset creati
 
 from facectrl.ml.classifier import ClassificationResult, Classifier, Thresholds
 from facectrl.ml.detector import FaceDetector
-from facectrl.ml.train import (AEAccuracy, MaximizeELBO, ReconstructionLoss,
-                               train)
+from facectrl.ml.train import AEAccuracy, MaximizeELBO, ReconstructionLoss, train
 
 __ALL__ = [
     "ReconstructionLoss",

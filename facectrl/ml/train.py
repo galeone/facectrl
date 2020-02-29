@@ -29,7 +29,7 @@ from ashpy.restorers.classifier import ClassifierRestorer
 from ashpy.trainers.classifier import ClassifierTrainer
 
 from facectrl.ml.classifier import ClassificationResult, Classifier, Thresholds
-from facectrl.ml.model import VAE
+from facectrl.ml.model import AE, VAE
 
 
 class ReconstructionLoss(ashpy.metrics.Metric):
@@ -193,7 +193,7 @@ class AEAccuracy(ashpy.metrics.Metric):
         )
 
         classifier = Classifier(
-            vae=context.classifier_model, thresholds=self._thresholds
+            model=context.classifier_model, thresholds=self._thresholds
         )
         for images, y_true in self._full_dataset:
 
@@ -299,7 +299,7 @@ class MaximizeELBO(Executor):
         Compute the loss.
         Args:
             context (:py:class:`ashpy.ClassifierContext`): Context for classification.
-            features (:py:class:`tf.Tensor`): Inputs for the VAE.
+            features (:py:class:`tf.Tensor`): Inputs for the Model.
             **kwargs:
         Returns:
             :py:class:`tf.Tensor`: Loss value.
@@ -334,10 +334,15 @@ class DatasetBuilder:
     def _to_ashpy_format(image: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         """Given an image, returns the pair (image, image)."""
         # ashpy expects the format: features, labels.
-        # Since we are traingn a vae, and we want to
+        # Since we are traingn a model, and we want to
         # minimize the reconstruction error, we can pass image as labels
         # and use the classifierloss wit the mse loss inside.
-        return image, image
+        noisy_label = tf.random.normal(shape=tf.shape(image)) + image
+        noisy_label = tf.clip_by_value(
+            noisy_label, clip_value_min=-1.0, clip_value_max=1.0
+        )
+
+        return image, noisy_label
 
     @staticmethod
     def squash(image: tf.Tensor) -> tf.Tensor:
@@ -395,7 +400,7 @@ class DatasetBuilder:
 
 
 def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> None:
-    """Train the VAE model.
+    """Train the Model.
     Args:
         dataset_path (Path): path of the dataset containing the headphone on/off pics.
         batch_size (int): the batch size.
@@ -421,15 +426,15 @@ def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> Non
         for key in keys
     }
 
-    vae = VAE()
+    model = AE()  # VAE()
     # define the model by passing a dummy input
-    # the call method of the VAE is the reconstruction
+    # the call method of the Model is the reconstruction
     # autoencoder-lik
-    vae(tf.zeros((1, 64, 64, 3)))
-    vae.summary()
+    model(tf.zeros((1, 64, 64, 3)))
+    model.summary()
 
     trainer = ClassifierTrainer(
-        model=vae,
+        model=model,
         # we are intrested only in the performance on unseen data.
         # Thus we measure the metrics on the validation datasets only
         # The only metric that is reallu measure both in training and validation
@@ -442,7 +447,8 @@ def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> Non
             )
         ],
         optimizer=tf.optimizers.Adam(1e-4),
-        loss=MaximizeELBO(),
+        # loss=MaximizeELBO(),
+        loss=ClassifierLoss(tf.keras.losses.MeanSquaredError()),
         logdir=str(logdir / "on"),
         epochs=epochs,
     )
@@ -451,15 +457,13 @@ def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> Non
 
     # Restore the best model and save it as a SavedModel
     best_path = logdir / "on" / "best" / "AEAccuracy"
-    vae = ClassifierRestorer(str(best_path)).restore_model(vae)
+    model = ClassifierRestorer(str(best_path)).restore_model(model)
     # Define the input shape by calling it on fake data
-    vae(tf.zeros((1, 64, 64, 3)))
-    vae.summary()
+    model(tf.zeros((1, 64, 64, 3)))
+    model.summary()
 
     dest_path = logdir / "on" / "saved"
-    tf.saved_model.save(vae, str(dest_path))
-    # tf.keras.models.save_model(vae, str(dest_path))
-    # vae.save(str(dest_path))
+    tf.saved_model.save(model, str(dest_path))
     copyfile(best_path / "AEAccuracy.json", dest_path / "AEAccuracy.json")
 
 

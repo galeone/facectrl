@@ -14,8 +14,6 @@ import cv2
 import numpy as np
 import tensorflow as tf
 
-from facectrl.ml.model import VAE
-
 
 class ClassificationResult(Enum):
     """A possible classification result."""
@@ -26,7 +24,7 @@ class ClassificationResult(Enum):
 
 
 class Thresholds:
-    """The thresholds learned by the vae."""
+    """The thresholds learned by the model."""
 
     def __init__(self, on: Dict, off: Dict):
         """The thresholds to use,
@@ -62,14 +60,14 @@ class Thresholds:
 class Classifier:
     """The Classifier object implements all the logic to trigger a detection.
     Args:
-        vae (tf.keras.Model): the previously trained vae.
+        model (tf.keras.Model): the previously trained model.
         thresholds (Thresholds): the dictionary containing the learned thresholds
                            (model selection result).
         debug (bool): when True, it enables the opencv visualization.
     """
 
-    def __init__(self, vae: VAE, thresholds: Thresholds, debug: bool = False) -> None:
-        self._vae = vae
+    def __init__(self, model, thresholds: Thresholds, debug: bool = False) -> None:
+        self._model = model
         self._thresholds = thresholds
         # mse that keeps the batch size
         self._mse = lambda a, b: tf.math.reduce_mean(
@@ -97,9 +95,9 @@ class Classifier:
         return rgb
 
     @property
-    def vae(self) -> VAE:
-        """Get the vae currently in use."""
-        return self._vae
+    def model(self):
+        """Get the model currently in use."""
+        return self._model
 
     @property
     def thresholds(self) -> Thresholds:
@@ -112,7 +110,7 @@ class Classifier:
         return (image + 1.0) / 2.0
 
     def __call__(self, face: tf.Tensor) -> ClassificationResult:
-        """Using the vae and the thresholds, do the classifcation of the face.
+        """Using the model and the thresholds, do the classifcation of the face.
         Args:
             face (tf.Tensor): the cropped tensor (use Classifier.preprocess)
         Return:
@@ -126,7 +124,7 @@ class Classifier:
         classified = np.array(
             [ClassificationResult.HEADPHONES_OFF] * tf.shape(face)[0].numpy()
         )
-        reconstruction = self._vae.call(
+        reconstruction = self._model.call(
             face
         )  # face and reconstructions have values in [-1,1]
         mse = self._mse(face, reconstruction).numpy()
@@ -141,23 +139,23 @@ class Classifier:
         #    mse >= (self._thresholds.off["mean"] - 3 * off_sigma)
         # ] = ClassificationResult.HEADPHONES_OFF
 
-        print(
-            "bs: ",
-            len(classified),
-            "on: ",
-            np.count_nonzero(classified == ClassificationResult.HEADPHONES_ON),
-            "t: ",
-            self._thresholds.on["mean"],
-            " off: ",
-            np.count_nonzero(classified == ClassificationResult.HEADPHONES_OFF),
-            " nd: ",
-            np.count_nonzero(classified == ClassificationResult.UNKNOWN),
-        )
+        # print(
+        #    "bs: ",
+        #    len(classified),
+        #    "on: ",
+        #    np.count_nonzero(classified == ClassificationResult.HEADPHONES_ON),
+        #    "t: ",
+        #    self._thresholds.on["mean"],
+        #    " off: ",
+        #    np.count_nonzero(classified == ClassificationResult.HEADPHONES_OFF),
+        #    " nd: ",
+        #    np.count_nonzero(classified == ClassificationResult.UNKNOWN),
+        # )
 
-        for idx, element in enumerate(classified):
-            if element != ClassificationResult.UNKNOWN:
-                logging.info("Classified as: %s with mse %f", element, mse[idx])
-                if self._debug:
+        if self._debug:
+            for idx, element in enumerate(classified):
+                if element != ClassificationResult.UNKNOWN:
+                    logging.info("Classified as: %s with mse %f", element, mse[idx])
                     # tf.reverse to go from RGB to BGR
                     cv2.imshow(
                         "reconstruction",
@@ -179,11 +177,11 @@ class Classifier:
                             )
                         ).numpy(),
                     )
-            else:
-                logging.info(
-                    "Unable to classify the input. mse %s is outside of positive %f and negative %f",
-                    mse,
-                    self._thresholds.on["mean"],
-                    self._thresholds.off["mean"],
-                )
+                else:
+                    logging.info(
+                        "Unable to classify the input. mse %s is outside of positive %f and negative %f",
+                        mse,
+                        self._thresholds.on["mean"],
+                        self._thresholds.off["mean"],
+                    )
         return classified

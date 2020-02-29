@@ -59,9 +59,9 @@ class Controller:
                 },
             )
 
-        vae = tf.saved_model.load(str(logdir / "on" / "saved"))
+        model = tf.saved_model.load(str(logdir / "on" / "saved"))
         self._classifier = Classifier(
-            vae=vae, thresholds=thresholds, debug=self._debug,
+            model=model, thresholds=thresholds, debug=self._debug,
         )
 
         self._playing = False
@@ -80,7 +80,10 @@ class Controller:
 
     def _on_name_appeared(self, manager, name) -> None:
         if name.name != self._desired_player:
-            pass
+            logging.info(
+                "Appeared player: %s but expected %s", name.name, self._desired_player
+            )
+            return
         self._player = Playerctl.Player.new_from_name(name)
 
         self._player.connect("playback-status::playing", self._on_play)
@@ -110,7 +113,7 @@ class Controller:
 
     def _detect_and_classify(self, frame) -> Tuple[ClassificationResult, Tuple]:
         bounding_box = self._detector.detect(frame)
-        classification_result = ClassificationResult.UNKNOWN
+        classification_result = [ClassificationResult.UNKNOWN]
 
         if bounding_box[-1] != 0:
             logging.info("Face found!")
@@ -121,7 +124,7 @@ class Controller:
                 )
             )
 
-        return classification_result, bounding_box
+        return classification_result[0], bounding_box
 
     def _decide(self, classification_result) -> None:
         self._locks["stop"].acquire()

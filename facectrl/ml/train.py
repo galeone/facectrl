@@ -81,7 +81,9 @@ class ReconstructionLoss(ashpy.metrics.Metric):
         """
         values = []
         for images, _ in self._dataset:
-            reconstructions = context.classifier_model.reconstruct(images)
+            reconstructions = context.classifier_model.reconstruct(
+                images, training=False
+            )
 
             mse = self._mse(images, reconstructions)
             values.append(mse)
@@ -284,14 +286,20 @@ class MaximizeELBO(Executor):
         super().__init__()
 
     @staticmethod
-    def log_normal_pdf(sample, mean, logvar, raxis=1):
-        log2pi = tf.math.log(2.0 * np.pi)
-        return tf.reduce_sum(
-            -0.5 * ((sample - mean) ** 2.0 * tf.exp(-logvar) + logvar + log2pi),
-            axis=raxis,
+    def _guassian_log_likelihood(targets, mean, std):
+        return (
+            0.5
+            * tf.reduce_sum(tf.math.squared_difference(targets, mean))
+            / (2 * tf.square(std))
         )
 
-    @Executor.reduce_loss
+    @staticmethod
+    def _kl_gaussian(mean, logvar):
+        var = tf.exp(logvar)
+        kl = 0.5 * tf.reduce_sum(tf.square(mean) + var - 1.0 - logvar)
+        return kl
+
+    # @Executor.reduce_loss
     def call(
         self, context: ClassifierContext, *, features: tf.Tensor, **kwargs,
     ) -> tf.Tensor:
@@ -304,19 +312,16 @@ class MaximizeELBO(Executor):
         Returns:
             :py:class:`tf.Tensor`: Loss value.
         """
-        mean, logvar = context.classifier_model.encode(features)
-        z = context.classifier_model.reparameterize(mean, logvar)
+        mean, logvar = context.classifier_model.encode(features, training=True)
+        z = context.classifier_model.reparameterize(mean, logvar, training=True)
+        reconstructions = context.classifier_model.decode(z, training=True)
 
-        logpz = self.log_normal_pdf(z, 0.0, 0.0)
-        logqz_x = self.log_normal_pdf(z, mean, logvar)
-
-        reconstructions = context.classifier_model.decode(z)
-        reconstruction_loss = tf.reduce_sum(
-            tf.math.squared_difference(reconstructions, features), axis=[1, 2, 3]
+        kl_loss = self._kl_gaussian(mean, logvar)
+        reconstruction_loss = self._guassian_log_likelihood(
+            features, reconstructions, 1e-4
         )
-        return -(logpz - logqz_x) + reconstruction_loss
 
-        # return -(logpx_z + kl)  # (batch_size,)
+        return kl_loss + reconstruction_loss
 
 
 class DatasetBuilder:
@@ -337,12 +342,13 @@ class DatasetBuilder:
         # Since we are traingn a model, and we want to
         # minimize the reconstruction error, we can pass image as labels
         # and use the classifierloss wit the mse loss inside.
-        noisy_label = tf.random.normal(shape=tf.shape(image)) + image
-        noisy_label = tf.clip_by_value(
-            noisy_label, clip_value_min=-1.0, clip_value_max=1.0
-        )
 
-        return image, noisy_label
+        # noisy_label = tf.random.normal(shape=tf.shape(image)) + image
+        # noisy_label = tf.clip_by_value(
+        #    noisy_label, clip_value_min=-1.0, clip_value_max=1.0
+        # )
+        # return image, noisy_label
+        return image, image
 
     @staticmethod
     def squash(image: tf.Tensor) -> tf.Tensor:
@@ -399,7 +405,9 @@ class DatasetBuilder:
         return dataset.batch(batch_size).prefetch(1)
 
 
-def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> None:
+def train(
+    dataset_path: Path, batch_size: int, epochs: int, logdir: Path, model_type: str
+) -> None:
     """Train the Model.
     Args:
         dataset_path (Path): path of the dataset containing the headphone on/off pics.
@@ -425,12 +433,17 @@ def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> Non
         )
         for key in keys
     }
+    if model_type == "vae":
+        model = VAE()
+        loss = MaximizeELBO()
+    elif model_type == "ae":
+        model = AE()
+        loss = ClassifierLoss(tf.keras.losses.MeanSquaredError())
 
-    model = AE()  # VAE()
     # define the model by passing a dummy input
     # the call method of the Model is the reconstruction
     # autoencoder-lik
-    model(tf.zeros((1, 64, 64, 3)))
+    model(tf.zeros((1, 64, 64, 3)), training=True)
     model.summary()
 
     trainer = ClassifierTrainer(
@@ -446,9 +459,8 @@ def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> Non
                 model_selection_operator=operator.gt,
             )
         ],
-        optimizer=tf.optimizers.Adam(1e-4),
-        # loss=MaximizeELBO(),
-        loss=ClassifierLoss(tf.keras.losses.MeanSquaredError()),
+        optimizer=tf.optimizers.Adam(1e-3),
+        loss=loss,
         logdir=str(logdir / "on"),
         epochs=epochs,
     )
@@ -459,7 +471,7 @@ def train(dataset_path: Path, batch_size: int, epochs: int, logdir: Path) -> Non
     best_path = logdir / "on" / "best" / "AEAccuracy"
     model = ClassifierRestorer(str(best_path)).restore_model(model)
     # Define the input shape by calling it on fake data
-    model(tf.zeros((1, 64, 64, 3)))
+    model(tf.zeros((1, 64, 64, 3)), training=False)
     model.summary()
 
     dest_path = logdir / "on" / "saved"
@@ -474,6 +486,7 @@ def main() -> int:
     parser.add_argument("--logdir", required=True)
     parser.add_argument("--batch-size", default=32, type=int)
     parser.add_argument("--epochs", default=100, type=int)
+    parser.add_argument("--model", type=str, choices=["ae", "vae"], required=True)
     args = parser.parse_args()
 
     dataset_path = Path(args.dataset_path)
@@ -486,7 +499,7 @@ def main() -> int:
     ):
         raise ValueError(f"Wrong dataset {dataset_path}. Missing on/off folders")
 
-    train(dataset_path, args.batch_size, args.epochs, Path(args.logdir))
+    train(dataset_path, args.batch_size, args.epochs, Path(args.logdir), args.model)
     return 0
 
 

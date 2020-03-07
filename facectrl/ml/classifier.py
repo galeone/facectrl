@@ -125,7 +125,7 @@ class Classifier:
             [ClassificationResult.HEADPHONES_OFF] * tf.shape(face)[0].numpy()
         )
         reconstruction = self._model.call(
-            face
+            face, training=False
         )  # face and reconstructions have values in [-1,1]
         mse = self._mse(face, reconstruction).numpy()
 

@@ -42,13 +42,16 @@ class Thresholds:
 
     @property
     def on(self):
+        """On dictionary."""
         return self._on
 
     @property
     def off(self):
+        """Off dictionary."""
         return self._off
 
     def asdict(self) -> Dict:
+        """Convert the thredshols to a dict."""
         return {
             "positive_threshold": self._on["mean"].item(),
             "positive_variance": self._on["variance"].item(),
@@ -66,7 +69,9 @@ class Classifier:
         debug (bool): when True, it enables the opencv visualization.
     """
 
-    def __init__(self, model, thresholds: Thresholds, debug: bool = False) -> None:
+    def __init__(
+        self, model, thresholds: Thresholds = None, debug: bool = False
+    ) -> None:
         self._model = model
         self._thresholds = thresholds
         # mse that keeps the batch size
@@ -74,6 +79,11 @@ class Classifier:
             tf.math.squared_difference(a, b), axis=[1, 2, 3]
         )
         self._debug = debug
+
+        self._is_classifier = (
+            len(self._model.call(inputs=tf.zeros((1, 64, 64, 3)), training=False).shape)
+            == 2
+        )
 
     @staticmethod
     def preprocess(crop: np.array) -> tf.Tensor:
@@ -110,7 +120,7 @@ class Classifier:
         return (image + 1.0) / 2.0
 
     def __call__(self, face: tf.Tensor) -> ClassificationResult:
-        """Using the model and the thresholds, do the classifcation of the face.
+        """Using the model and the thresholds (if any), do the classifcation of the face.
         Args:
             face (tf.Tensor): the cropped tensor (use Classifier.preprocess)
         Return:
@@ -124,50 +134,44 @@ class Classifier:
         classified = np.array(
             [ClassificationResult.HEADPHONES_OFF] * tf.shape(face)[0].numpy()
         )
-        reconstruction = self._model.call(
-            face, training=False
-        )  # face and reconstructions have values in [-1,1]
-        mse = self._mse(face, reconstruction).numpy()
 
-        on_sigma = self._thresholds.on["variance"]
-        off_sigma = self._thresholds.off["variance"]
+        if self._is_classifier:
+            predictions = self._model.call(face, training=False)
+            classified[
+                np.argmax(predictions, axis=-1) == 1
+            ] = ClassificationResult.HEADPHONES_ON
+        else:
+            reconstruction = self._model.call(
+                face, training=False
+            )  # face and reconstructions have values in [-1,1]
+            mse = self._mse(face, reconstruction).numpy()
 
-        classified[
-            mse <= (self._thresholds.on["mean"] + 3 * on_sigma)
-        ] = ClassificationResult.HEADPHONES_ON
-        # classified[
-        #    mse >= (self._thresholds.off["mean"] - 3 * off_sigma)
-        # ] = ClassificationResult.HEADPHONES_OFF
+            on_sigma = self._thresholds.on["variance"]
 
-        # print(
-        #    "bs: ",
-        #    len(classified),
-        #    "on: ",
-        #    np.count_nonzero(classified == ClassificationResult.HEADPHONES_ON),
-        #    "t: ",
-        #    self._thresholds.on["mean"],
-        #    " off: ",
-        #    np.count_nonzero(classified == ClassificationResult.HEADPHONES_OFF),
-        #    " nd: ",
-        #    np.count_nonzero(classified == ClassificationResult.UNKNOWN),
-        # )
+            classified[
+                mse <= (self._thresholds.on["mean"] + 3 * on_sigma)
+            ] = ClassificationResult.HEADPHONES_ON
 
         if self._debug:
             for idx, element in enumerate(classified):
                 if element != ClassificationResult.UNKNOWN:
-                    logging.info("Classified as: %s with mse %f", element, mse[idx])
-                    # tf.reverse to go from RGB to BGR
-                    cv2.imshow(
-                        "reconstruction",
-                        tf.squeeze(
-                            tf.image.convert_image_dtype(
-                                tf.reverse(
-                                    self.normalize(reconstruction[idx]), axis=[-1]
-                                ),
-                                tf.uint8,
-                            )
-                        ).numpy(),
-                    )
+                    if self._is_classifier:
+                        logging.info("Classified as: %s", element)
+                    else:
+                        logging.info("Classified as: %s with mse %f", element, mse[idx])
+                        # tf.reverse to go from RGB to BGR
+                        cv2.imshow(
+                            "reconstruction",
+                            tf.squeeze(
+                                tf.image.convert_image_dtype(
+                                    tf.reverse(
+                                        self.normalize(reconstruction[idx]), axis=[-1]
+                                    ),
+                                    tf.uint8,
+                                )
+                            ).numpy(),
+                        )
+
                     cv2.imshow(
                         "input",
                         tf.squeeze(
@@ -177,11 +181,5 @@ class Classifier:
                             )
                         ).numpy(),
                     )
-                else:
-                    logging.info(
-                        "Unable to classify the input. mse %s is outside of positive %f and negative %f",
-                        mse,
-                        self._thresholds.on["mean"],
-                        self._thresholds.off["mean"],
-                    )
+
         return classified

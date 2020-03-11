@@ -18,18 +18,17 @@ from pathlib import Path
 from shutil import copyfile
 from typing import Callable, Dict
 
-import ashpy
-import numpy as np
 import tensorflow as tf
+
+import ashpy
 from ashpy.contexts import ClassifierContext
 from ashpy.losses.classifier import ClassifierLoss
 from ashpy.losses.executor import Executor
-from ashpy.modes import LogEvalMode
+from ashpy.metrics.classifier import ClassifierMetric
 from ashpy.restorers.classifier import ClassifierRestorer
 from ashpy.trainers.classifier import ClassifierTrainer
-
 from facectrl.ml.classifier import ClassificationResult, Classifier, Thresholds
-from facectrl.ml.model import AE, VAE
+from facectrl.ml.model import AE, MLCNN, VAE
 
 
 class ReconstructionLoss(ashpy.metrics.Metric):
@@ -65,7 +64,9 @@ class ReconstructionLoss(ashpy.metrics.Metric):
             logdir=logdir,
         )
 
-        self._mse = tf.keras.losses.MeanSquaredError()
+        self._mse = lambda x, y: tf.reduce_mean(
+            tf.math.squared_difference(x, y), axis=[1, 2, 3]
+        )
         self._dataset = dataset
         self.mean, self.variance = tf.nn.moments(tf.zeros((1, 1)), axes=[0])
         self.inputs, self.reconstructions = None, None
@@ -86,7 +87,7 @@ class ReconstructionLoss(ashpy.metrics.Metric):
             )
 
             mse = self._mse(images, reconstructions)
-            values.append(mse)
+            values.extend(mse)
             self._distribute_strategy.experimental_run(
                 lambda: self._metric.update_state(mse)
             )
@@ -130,7 +131,6 @@ class AEAccuracy(ashpy.metrics.Metric):
             logdir=logdir,
         )
 
-        self._mse = tf.keras.losses.MeanSquaredError()
         self._mean_positive_loss = ReconstructionLoss(
             positive_dataset, logdir=logdir, name="mse/positive"
         )
@@ -276,17 +276,8 @@ class AEAccuracy(ashpy.metrics.Metric):
 class MaximizeELBO(Executor):
     r"""Maximizes the Evidence Lowe BOund (ELBO)"""
 
-    def __init__(self) -> None:
-        r"""
-        Initialize :py:class:`MaximizeELBO`.
-
-        Returns:
-            :py:obj:`None`
-        """
-        super().__init__()
-
     @staticmethod
-    def _guassian_log_likelihood(targets, mean, std):
+    def _gaussian_log_likelihood(targets, mean, std):
         return (
             0.5
             * tf.reduce_sum(tf.math.squared_difference(targets, mean))
@@ -317,8 +308,8 @@ class MaximizeELBO(Executor):
         reconstructions = context.classifier_model.decode(z, training=True)
 
         kl_loss = self._kl_gaussian(mean, logvar)
-        reconstruction_loss = self._guassian_log_likelihood(
-            features, reconstructions, 1e-4
+        reconstruction_loss = self._gaussian_log_likelihood(
+            features, reconstructions, 1e-2
         )
 
         return kl_loss + reconstruction_loss
@@ -336,18 +327,8 @@ class DatasetBuilder:
         return image
 
     @staticmethod
-    def _to_ashpy_format(image: tf.Tensor) -> (tf.Tensor, tf.Tensor):
+    def _to_autoencoder_format(image: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         """Given an image, returns the pair (image, image)."""
-        # ashpy expects the format: features, labels.
-        # Since we are traingn a model, and we want to
-        # minimize the reconstruction error, we can pass image as labels
-        # and use the classifierloss wit the mse loss inside.
-
-        # noisy_label = tf.random.normal(shape=tf.shape(image)) + image
-        # noisy_label = tf.clip_by_value(
-        #    noisy_label, clip_value_min=-1.0, clip_value_max=1.0
-        # )
-        # return image, noisy_label
         return image, image
 
     @staticmethod
@@ -384,7 +365,11 @@ class DatasetBuilder:
         )
 
     def __call__(
-        self, glob_path: Path, batch_size: int, augmentation: bool = False
+        self,
+        glob_path: Path,
+        batch_size: int,
+        augmentation: bool = False,
+        use_label: int = -1,
     ) -> tf.data.Dataset:
         """Read all the images in the glob_path, and optionally applies
         the data agumentation step.
@@ -396,13 +381,18 @@ class DatasetBuilder:
         Returns:
             the tf.data.Dataset
         """
+
         dataset = tf.data.Dataset.list_files(str(glob_path)).map(self._to_image)
         if augmentation:
             dataset = dataset.map(self.augment).unbatch()
         dataset = dataset.map(self.squash)  # in [-1, 1] range
-        dataset = dataset.map(self._to_ashpy_format).cache()
+        if use_label != -1:
+            label = use_label
+            dataset = dataset.map(lambda image: (image, label))
+        else:
+            dataset = dataset.map(self._to_autoencoder_format)
         dataset = dataset.shuffle(100)
-        return dataset.batch(batch_size).prefetch(1)
+        return dataset.batch(batch_size).cache().prefetch(1)
 
 
 def train(
@@ -416,29 +406,79 @@ def train(
         logdir (Path): destination of the logging dir, checkpoing and selected best models.
     """
 
-    keys = ["on", "off"]
-    training_datasets = {
-        key: DatasetBuilder()(
+    is_classifier = model_type == "classifier"
+    training_datasets = {}
+    validation_datasets = {}
+
+    for key in ["on", "off"]:
+        label = -1
+        if is_classifier:
+            if key == "on":
+                label = 1
+            elif key == "off":
+                label = 0
+        training_datasets[key] = DatasetBuilder()(
             glob_path=dataset_path / key / "*.png",
             batch_size=batch_size,
             augmentation=True,
+            use_label=label,
         )
-        for key in keys
-    }
-    validation_datasets = {
-        key: DatasetBuilder()(
+
+        validation_datasets[key] = DatasetBuilder()(
             glob_path=dataset_path / key / "*.png",
             batch_size=batch_size,
-            augmentation=False,
+            augmentation=True,
+            use_label=label,
         )
-        for key in keys
-    }
-    if model_type == "vae":
-        model = VAE()
-        loss = MaximizeELBO()
-    elif model_type == "ae":
-        model = AE()
-        loss = ClassifierLoss(tf.keras.losses.MeanSquaredError())
+
+    if is_classifier:
+        model = MLCNN()
+        loss = ClassifierLoss(
+            tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+        )
+        metrics = [
+            ClassifierMetric(
+                tf.keras.metrics.BinaryAccuracy(), model_selection_operator=operator.gt
+            )
+        ]
+        best_path = logdir / "on" / "best" / "binary_accuracy"
+        best_json = "binary_accuracy.json"
+
+        training_dataset = (
+            training_datasets["on"]
+            .unbatch()
+            .concatenate(training_datasets["off"].unbatch())
+            .shuffle(100)
+            .batch(batch_size)
+        )
+        validation_dataset = (
+            validation_datasets["on"]
+            .unbatch()
+            .concatenate(validation_datasets["off"].unbatch())
+            .shuffle(100)
+            .batch(batch_size)
+        )
+
+    else:
+        if model_type == "vae":
+            model = VAE()
+            loss = MaximizeELBO()
+        if model_type == "ae":
+            model = AE()
+            loss = ClassifierLoss(tf.keras.losses.MeanSquaredError())
+
+        metrics = [
+            AEAccuracy(
+                validation_datasets["on"],
+                validation_datasets["off"],
+                model_selection_operator=operator.gt,
+            )
+        ]
+        best_path = logdir / "on" / "best" / "AEAccuracy"
+        best_json = "AEAccuracy.json"
+
+        training_dataset = training_datasets["on"]
+        validation_dataset = validation_datasets["on"]
 
     # define the model by passing a dummy input
     # the call method of the Model is the reconstruction
@@ -448,27 +488,17 @@ def train(
 
     trainer = ClassifierTrainer(
         model=model,
-        # we are intrested only in the performance on unseen data.
-        # Thus we measure the metrics on the validation datasets only
-        # The only metric that is reallu measure both in training and validation
-        # is the loss (executed automatically by ashpy)
-        metrics=[
-            AEAccuracy(
-                validation_datasets["on"],
-                validation_datasets["off"],
-                model_selection_operator=operator.gt,
-            )
-        ],
-        optimizer=tf.optimizers.Adam(1e-3),
+        metrics=metrics,
+        optimizer=tf.optimizers.Adam(1e-4),
         loss=loss,
         logdir=str(logdir / "on"),
         epochs=epochs,
     )
 
-    trainer(training_datasets["on"], validation_datasets["on"])
+    trainer(training_dataset, validation_dataset, measure_performance_freq=-1)
 
     # Restore the best model and save it as a SavedModel
-    best_path = logdir / "on" / "best" / "AEAccuracy"
+
     model = ClassifierRestorer(str(best_path)).restore_model(model)
     # Define the input shape by calling it on fake data
     model(tf.zeros((1, 64, 64, 3)), training=False)
@@ -476,7 +506,7 @@ def train(
 
     dest_path = logdir / "on" / "saved"
     tf.saved_model.save(model, str(dest_path))
-    copyfile(best_path / "AEAccuracy.json", dest_path / "AEAccuracy.json")
+    copyfile(best_path / best_json, dest_path / best_json)
 
 
 def main() -> int:
@@ -486,7 +516,9 @@ def main() -> int:
     parser.add_argument("--logdir", required=True)
     parser.add_argument("--batch-size", default=32, type=int)
     parser.add_argument("--epochs", default=100, type=int)
-    parser.add_argument("--model", type=str, choices=["ae", "vae"], required=True)
+    parser.add_argument(
+        "--model", type=str, choices=["ae", "vae", "classifier"], required=True
+    )
     args = parser.parse_args()
 
     dataset_path = Path(args.dataset_path)

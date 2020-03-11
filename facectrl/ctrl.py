@@ -16,11 +16,11 @@ from threading import Lock
 from typing import Tuple
 
 import cv2
-import gi
 import tensorflow as tf
 from gi.repository import GLib, Playerctl
 
-from facectrl.ml import ClassificationResult, Classifier, FaceDetector, Thresholds
+from facectrl.ml import (ClassificationResult, Classifier, FaceDetector,
+                         Thresholds)
 from facectrl.video import Tracker, VideoStream
 
 
@@ -34,6 +34,7 @@ class Controller:
         stream: VideoStream,
         detector: FaceDetector,
         logdir: Path,
+        metric_name: str,
         debug: bool,
     ) -> None:
         """The controller, that controles the player using the models."""
@@ -46,16 +47,18 @@ class Controller:
         self._detector = detector
         self._debug = debug
 
-        with open(logdir / "on" / "best" / "AEAccuracy" / "AEAccuracy.json") as json_fp:
+        with open(
+            logdir / "on" / "best" / metric_name / (metric_name + ".json")
+        ) as json_fp:
             json_file = json.load(json_fp)
             thresholds = Thresholds(
                 on={
-                    "mean": float(json_file["positive_threshold"]),
-                    "variance": float(json_file["positive_variance"]),
+                    "mean": float(json_file.get("positive_threshold", -1)),
+                    "variance": float(json_file.get("positive_variance", -1)),
                 },
                 off={
-                    "mean": float(json_file["negative_threshold"]),
-                    "variance": float(json_file["negative_variance"]),
+                    "mean": float(json_file.get("negative_threshold", -1)),
+                    "variance": float(json_file.get("negative_variance", -1)),
                 },
             )
 
@@ -131,13 +134,13 @@ class Controller:
         if not self._stop:
             if (
                 not self._is_playing()
-                and classification_result is ClassificationResult.HEADPHONES_ON
+                and classification_result == ClassificationResult.HEADPHONES_ON
             ):
                 logging.info("PLAY")
                 self._player.play()
             if (
                 self._is_playing()
-                and classification_result is ClassificationResult.HEADPHONES_OFF
+                and classification_result == ClassificationResult.HEADPHONES_OFF
             ):
                 logging.info("PAUSE")
                 self._player.pause()
@@ -220,12 +223,15 @@ def main():
     parser.add_argument("--logdir", required=True, type=str)
     parser.add_argument("--classifier-params", required=True)
     parser.add_argument("--stream-source", default=0)
+    parser.add_argument("--metric", required=True)
     parser.add_argument("--debug", default=False, action="store_true")
     args = parser.parse_args()
 
     stream = VideoStream(args.stream_source)
     detector = FaceDetector(Path(args.classifier_params))
-    Controller(args.player, stream, detector, Path(args.logdir), args.debug)
+    Controller(
+        args.player, stream, detector, Path(args.logdir), args.metric, args.debug
+    )
 
     return 1
 

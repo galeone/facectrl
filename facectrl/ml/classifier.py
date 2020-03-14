@@ -79,9 +79,8 @@ class Classifier:
             tf.math.squared_difference(a, b), axis=[1, 2, 3]
         )
         self._debug = debug
-
         self._is_classifier = (
-            len(self._model.call(inputs=tf.zeros((1, 64, 64, 3)), training=False).shape)
+            len(self._model.call(inputs=tf.zeros((1, 64, 64, 1)), training=False).shape)
             == 2
         )
 
@@ -91,18 +90,23 @@ class Classifier:
         Args:
             crop (np.array): a BGR image. np.uin8
         Return:
-            face (tf.Tensor): the post-processed face, tf.float32, 64x64. RGB.
+            face (tf.Tensor): the post-processed face, tf.float32, 64x64x1
         """
+
         crop = tf.convert_to_tensor(crop)
         rgb = tf.reverse(crop, axis=[-1])  # 0,255
+        gray = tf.image.rgb_to_grayscale(rgb)
+
+        ## NOTE: mandatory convert the image to float32 before
+        # calling resize. Resize is stupid and changes the dtype
+        # WITHOUT scaling the values in the dtype range-
         # Convert to [0,1]
-        rgb = tf.image.convert_image_dtype(rgb, tf.float32)
-        # Convert to [-1,1]
-        rgb = (rgb - 0.5) * 2.0
-        rgb = tf.image.resize(rgb, (64, 64))
-        if tf.equal(tf.rank(rgb), 3):
-            return tf.expand_dims(rgb, axis=[0])
-        return rgb
+        gray = tf.image.convert_image_dtype(gray, tf.float32)
+        gray = tf.image.resize(gray, (64, 64))
+
+        if tf.equal(tf.rank(gray), 3):
+            gray = tf.expand_dims(gray, axis=[0])
+        return gray
 
     @property
     def model(self):
@@ -141,9 +145,7 @@ class Classifier:
                 np.argmax(predictions, axis=-1) == 1
             ] = ClassificationResult.HEADPHONES_ON
         else:
-            reconstruction = self._model.call(
-                face, training=False
-            )  # face and reconstructions have values in [-1,1]
+            reconstruction = self._model.call(face, training=False)
             mse = self._mse(face, reconstruction).numpy()
 
             on_sigma = self._thresholds.on["variance"]
@@ -164,21 +166,16 @@ class Classifier:
                             "reconstruction",
                             tf.squeeze(
                                 tf.image.convert_image_dtype(
-                                    tf.reverse(
-                                        self.normalize(reconstruction[idx]), axis=[-1]
-                                    ),
-                                    tf.uint8,
-                                )
+                                    reconstruction[idx], tf.uint8
+                                ),
+                                axis=[-1],
                             ).numpy(),
                         )
 
                     cv2.imshow(
                         "input",
                         tf.squeeze(
-                            tf.image.convert_image_dtype(
-                                tf.reverse(self.normalize(face[idx]), axis=[-1]),
-                                tf.uint8,
-                            )
+                            tf.image.convert_image_dtype(face[idx], tf.uint8), axis=[-1]
                         ).numpy(),
                     )
 

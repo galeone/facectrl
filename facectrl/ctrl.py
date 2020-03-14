@@ -138,7 +138,7 @@ class Controller:
             ):
                 logging.info("PLAY")
                 self._player.play()
-            if (
+            elif (
                 self._is_playing()
                 and classification_result == ClassificationResult.HEADPHONES_OFF
             ):

@@ -14,21 +14,22 @@ import operator
 import os
 import sys
 from argparse import ArgumentParser
+from glob import glob
 from pathlib import Path
 from shutil import copyfile
 from typing import Callable, Dict
 
-import tensorflow as tf
-
 import ashpy
+import tensorflow as tf
 from ashpy.contexts import ClassifierContext
 from ashpy.losses.classifier import ClassifierLoss
 from ashpy.losses.executor import Executor
 from ashpy.metrics.classifier import ClassifierMetric
 from ashpy.restorers.classifier import ClassifierRestorer
 from ashpy.trainers.classifier import ClassifierTrainer
+
 from facectrl.ml.classifier import ClassificationResult, Classifier, Thresholds
-from facectrl.ml.model import AE, MLCNN, VAE
+from facectrl.ml.model import AE, NN, VAE
 
 
 class ReconstructionLoss(ashpy.metrics.Metric):
@@ -237,28 +238,24 @@ class AEAccuracy(ashpy.metrics.Metric):
         super().log(step)
         tf.summary.image(
             "positive",
-            DatasetBuilder.normalize(
-                tf.concat(
-                    [
-                        self._mean_positive_loss.inputs,
-                        self._mean_positive_loss.reconstructions,
-                    ],
-                    axis=2,
-                )
+            tf.concat(
+                [
+                    self._mean_positive_loss.inputs,
+                    self._mean_positive_loss.reconstructions,
+                ],
+                axis=2,
             ),
             step=step,
         )
 
         tf.summary.image(
             "negative",
-            DatasetBuilder.normalize(
-                tf.concat(
-                    [
-                        self._mean_negative_loss.inputs,
-                        self._mean_negative_loss.reconstructions,
-                    ],
-                    axis=2,
-                )
+            tf.concat(
+                [
+                    self._mean_negative_loss.inputs,
+                    self._mean_negative_loss.reconstructions,
+                ],
+                axis=2,
             ),
             step=step,
         )
@@ -322,6 +319,7 @@ class DatasetBuilder:
 
         image = tf.io.read_file(filename)
         image = tf.image.decode_png(image)
+        image = tf.image.rgb_to_grayscale(image)
         image = tf.image.convert_image_dtype(image, tf.float32)
         image = tf.image.resize(image, (64, 64))
         return image
@@ -330,16 +328,6 @@ class DatasetBuilder:
     def _to_autoencoder_format(image: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         """Given an image, returns the pair (image, image)."""
         return image, image
-
-    @staticmethod
-    def squash(image: tf.Tensor) -> tf.Tensor:
-        """Given an image in [0,1] squash its values in [-1,1]"""
-        return (image - 0.5) * 2.0  # [-1, 1] range
-
-    @staticmethod
-    def normalize(image: tf.Tensor) -> tf.Tensor:
-        """Given an image in [-1,1] squash its values in [0,1]"""
-        return (image + 1.0) / 2.0
 
     @staticmethod
     def augment(image: tf.Tensor) -> tf.Tensor:
@@ -355,9 +343,7 @@ class DatasetBuilder:
             [
                 tf.image.random_flip_left_right(image),
                 tf.image.random_contrast(image, lower=0.1, upper=0.6),
-                tf.image.random_hue(image, max_delta=0.2),
                 tf.image.random_brightness(image, max_delta=0.2),
-                tf.image.random_saturation(image, lower=0.1, upper=0.6),
                 tf.image.random_jpeg_quality(
                     image, min_jpeg_quality=20, max_jpeg_quality=100
                 ),
@@ -370,6 +356,8 @@ class DatasetBuilder:
         batch_size: int,
         augmentation: bool = False,
         use_label: int = -1,
+        skip: int = -1,
+        take: int = -1,
     ) -> tf.data.Dataset:
         """Read all the images in the glob_path, and optionally applies
         the data agumentation step.
@@ -378,21 +366,25 @@ class DatasetBuilder:
             batch_size (int): the batch size.
             augmentation(bool): when True, applies data agumentation and increase the
                                 dataset size.
+            skip: how many files to skip from the glob_path listed files. -1 = do not skip.
+            take: how many files to take from the glob_path listed files. -1 = take all.
         Returns:
             the tf.data.Dataset
         """
-
         dataset = tf.data.Dataset.list_files(str(glob_path)).map(self._to_image)
+        if skip != -1:
+            dataset = dataset.skip(skip)
+        if take != -1:
+            dataset = dataset.take(take)
+
         if augmentation:
             dataset = dataset.map(self.augment).unbatch()
-        dataset = dataset.map(self.squash)  # in [-1, 1] range
         if use_label != -1:
             label = use_label
             dataset = dataset.map(lambda image: (image, label))
         else:
             dataset = dataset.map(self._to_autoencoder_format)
-        dataset = dataset.shuffle(100)
-        return dataset.batch(batch_size).cache().prefetch(1)
+        return dataset.batch(batch_size).prefetch(1)
 
 
 def train(
@@ -422,6 +414,8 @@ def train(
             batch_size=batch_size,
             augmentation=True,
             use_label=label,
+            # skip the first 100 files: reserved for validation
+            skip=100,
         )
 
         validation_datasets[key] = DatasetBuilder()(
@@ -429,10 +423,12 @@ def train(
             batch_size=batch_size,
             augmentation=True,
             use_label=label,
+            # take the first 100
+            take=100,
         )
 
     if is_classifier:
-        model = MLCNN()
+        model = NN()
         loss = ClassifierLoss(
             tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
         )
@@ -448,15 +444,18 @@ def train(
             training_datasets["on"]
             .unbatch()
             .concatenate(training_datasets["off"].unbatch())
-            .shuffle(100)
+            .shuffle(2 * len(glob(str(dataset_path / "on" / "*.png"))))
             .batch(batch_size)
+            .prefetch(1)
         )
+
         validation_dataset = (
             validation_datasets["on"]
             .unbatch()
             .concatenate(validation_datasets["off"].unbatch())
-            .shuffle(100)
+            .shuffle(2 * len(glob(str(dataset_path / "on" / "*.png"))))
             .batch(batch_size)
+            .prefetch(1)
         )
 
     else:
@@ -483,7 +482,7 @@ def train(
     # define the model by passing a dummy input
     # the call method of the Model is the reconstruction
     # autoencoder-lik
-    model(tf.zeros((1, 64, 64, 3)), training=True)
+    model(tf.zeros((1, 64, 64, 1)), training=True)
     model.summary()
 
     trainer = ClassifierTrainer(
@@ -501,7 +500,7 @@ def train(
 
     model = ClassifierRestorer(str(best_path)).restore_model(model)
     # Define the input shape by calling it on fake data
-    model(tf.zeros((1, 64, 64, 3)), training=False)
+    model(tf.zeros((1, 64, 64, 1)), training=False)
     model.summary()
 
     dest_path = logdir / "on" / "saved"

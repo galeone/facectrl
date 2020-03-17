@@ -19,15 +19,15 @@ from pathlib import Path
 from shutil import copyfile
 from typing import Callable, Dict
 
-import ashpy
 import tensorflow as tf
+
+import ashpy
 from ashpy.contexts import ClassifierContext
 from ashpy.losses.classifier import ClassifierLoss
 from ashpy.losses.executor import Executor
 from ashpy.metrics.classifier import ClassifierMetric
 from ashpy.restorers.classifier import ClassifierRestorer
 from ashpy.trainers.classifier import ClassifierTrainer
-
 from facectrl.ml.classifier import ClassificationResult, Classifier, Thresholds
 from facectrl.ml.model import AE, NN, VAE
 
@@ -157,7 +157,7 @@ class AEAccuracy(ashpy.metrics.Metric):
             self._positive_dataset.unbatch()
             .map(self._positive)
             .concatenate(self._negative_dataset.unbatch().map(self._negative))
-            .shuffle(100)
+            .shuffle(2000)
             .batch(batch_size)
         )
 
@@ -199,7 +199,6 @@ class AEAccuracy(ashpy.metrics.Metric):
             model=context.classifier_model, thresholds=self._thresholds
         )
         for images, y_true in self._full_dataset:
-
             y_pred = classifier(images)
             y_pred[y_pred == ClassificationResult.HEADPHONES_ON] = 1
             y_pred[y_pred == ClassificationResult.HEADPHONES_OFF] = 0
@@ -372,12 +371,14 @@ class DatasetBuilder:
             the tf.data.Dataset
         """
         dataset = tf.data.Dataset.list_files(str(glob_path)).map(self._to_image)
+
         if skip != -1:
             dataset = dataset.skip(skip)
         if take != -1:
             dataset = dataset.take(take)
 
         if augmentation:
+            dataset = dataset.shuffle(2 * len(glob(str(glob_path))))
             dataset = dataset.map(self.augment).unbatch()
         if use_label != -1:
             label = use_label
@@ -485,10 +486,13 @@ def train(
     model(tf.zeros((1, 64, 64, 1)), training=True)
     model.summary()
 
+    learning_rate = tf.keras.optimizers.schedules.ExponentialDecay(
+        1e-3, decay_rate=0.5, decay_steps=1000, staircase=True
+    )
     trainer = ClassifierTrainer(
         model=model,
         metrics=metrics,
-        optimizer=tf.optimizers.Adam(1e-4),
+        optimizer=tf.optimizers.Adam(learning_rate),
         loss=loss,
         logdir=str(logdir / "on"),
         epochs=epochs,

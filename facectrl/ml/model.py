@@ -23,6 +23,7 @@ class AE(tf.keras.Model):
                 tf.keras.layers.Input(shape=(64, 64, 1)),
                 tf.keras.layers.Flatten(),
                 tf.keras.layers.Dense(64, activation=tf.nn.leaky_relu),
+                tf.keras.layers.Dense(64, activation=tf.nn.leaky_relu),
                 tf.keras.layers.Dense(self._latent_dim),  # linear
             ]
         )
@@ -54,40 +55,22 @@ class AE(tf.keras.Model):
 class VAE(tf.keras.Model):
     def __init__(self):
         super().__init__()
-        self._latent_dim = 128
+        self._latent_dim = 64
         self.encoder = tf.keras.Sequential(
             [
                 tf.keras.layers.Input(shape=(64, 64, 1)),
-                tf.keras.layers.Conv2D(
-                    32, (3, 3), activation=tf.nn.relu, padding="same", strides=(2, 2)
-                ),
-                tf.keras.layers.Conv2D(
-                    64, (3, 3), activation=tf.nn.relu, padding="same", strides=(2, 2)
-                ),
-                tf.keras.layers.Conv2D(
-                    128, (3, 3), padding="same", activation=tf.nn.relu, strides=(2, 2)
-                ),  # 128x8x8
                 tf.keras.layers.Flatten(),
+                tf.keras.layers.Dense(64, activation=tf.nn.leaky_relu),
                 tf.keras.layers.Dense(self._latent_dim * 2),
             ]
         )
 
         self.decoder = tf.keras.Sequential(
             [
-                tf.keras.layers.Input(shape=(self._latent_dim,)),
-                tf.keras.layers.Reshape((4, 4, 8)),
-                tf.keras.layers.Conv2DTranspose(
-                    128, (3, 3), activation=tf.nn.relu, padding="same", strides=(2, 2)
-                ),
-                tf.keras.layers.Conv2DTranspose(
-                    64, (3, 3), activation=tf.nn.relu, padding="same", strides=(2, 2)
-                ),
-                tf.keras.layers.Conv2DTranspose(
-                    32, (3, 3), activation=tf.nn.relu, padding="same", strides=(2, 2)
-                ),
-                tf.keras.layers.Conv2DTranspose(
-                    1, (3, 3), activation=tf.nn.tanh, padding="same", strides=(2, 2)
-                ),  # 64x64x1, [-1,1]
+                tf.keras.layers.Input(shape=(self._latent_dim)),
+                tf.keras.layers.Dense(64, activation=tf.nn.leaky_relu),
+                tf.keras.layers.Dense(64 * 64, activation=tf.nn.sigmoid),
+                tf.keras.layers.Reshape((64, 64, 1)),
             ]
         )
 

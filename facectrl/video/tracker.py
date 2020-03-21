@@ -64,12 +64,26 @@ class Tracker:
         """
         self._classifier = classifier
 
-    def track_and_classify(self, frame: np.array) -> ClassificationResult:
+    @property
+    def max_failures(self) -> int:
+        """Get the max_failures value: the number of frame to skip
+        before raising an exception during the "track" call."""
+        return self._max_failures
+
+    @max_failures.setter
+    def max_failures(self, value):
+        """Update the max_failures value."""
+        self._max_failures = value
+
+    def track_and_classify(
+        self, frame: np.array, expansion=(100, 100)
+    ) -> ClassificationResult:
         """Track the object (selected during the init), in the current frame.
         If the number of attempts of tracking exceed the value of max_failures
         (selected during the init), this function throws a ValueError exception.
         Args:
             frame: BGR input image
+            expansion: expand the ROI around the detected object by this amount
         Return:
             classification_result (ClassificationResult)
         """
@@ -79,6 +93,7 @@ class Tracker:
         classification_result = ClassificationResult.UNKNOWN
         if success:
             self._failures = 0
+
             if self._debug:
                 bounding_box = np.array(bounding_box, dtype=np.int32)
                 frame_copy = frame.copy()
@@ -91,8 +106,10 @@ class Tracker:
                 cv2.imshow("debug", frame_copy)
                 cv2.waitKey(1)
 
-            crop = FaceDetector.crop(frame, bounding_box, expansion=(70, 70))
-            classification_result = self._classifier(self._classifier.preprocess(crop))
+            crop = FaceDetector.crop(frame, bounding_box, expansion=expansion)
+            classification_result = self._classifier(self._classifier.preprocess(crop))[
+                0
+            ]
         else:
             self._failures += 1
             if self._failures >= self._max_failures:

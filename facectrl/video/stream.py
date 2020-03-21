@@ -81,7 +81,9 @@ class VideoStream:
 
     @property
     def fps(self) -> float:
-        """Return the current FPS value.
+        """Return the current FPS value of the video stream.
+        Please note that this is not the FPS of your application
+        using this VideoStream.
         """
         if not self._fps:
             self._fps = self._stream.get(cv2.CAP_PROP_FPS)

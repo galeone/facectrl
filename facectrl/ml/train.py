@@ -308,7 +308,7 @@ class MaximizeELBO(Executor):
             features, reconstructions, 1e-2
         )
 
-        return kl_loss + reconstruction_loss
+        return kl_loss + 10000 * reconstruction_loss
 
 
 class DatasetBuilder:
@@ -487,7 +487,7 @@ def train(
     model.summary()
 
     learning_rate = tf.keras.optimizers.schedules.ExponentialDecay(
-        1e-3, decay_rate=0.5, decay_steps=1000, staircase=True
+        5e-3, decay_rate=0.98, decay_steps=1000, staircase=True
     )
     trainer = ClassifierTrainer(
         model=model,

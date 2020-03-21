@@ -7,7 +7,7 @@
 """Package containing the tools to use during the inference."""
 
 import logging
-from enum import Enum, auto
+from enum import Enum
 from typing import Dict
 
 import cv2
@@ -18,9 +18,9 @@ import tensorflow as tf
 class ClassificationResult(Enum):
     """A possible classification result."""
 
-    HEADPHONES_ON = auto()
-    HEADPHONES_OFF = auto()
-    UNKNOWN = auto()
+    HEADPHONES_ON = 1
+    HEADPHONES_OFF = 0
+    UNKNOWN = -1
 
 
 class Thresholds:
@@ -178,5 +178,4 @@ class Classifier:
                             tf.image.convert_image_dtype(face[idx], tf.uint8), axis=[-1]
                         ).numpy(),
                     )
-
         return classified

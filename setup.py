@@ -26,6 +26,7 @@ if __name__ == "__main__":
         author_email=METADATA["email"],
         description="FaceCTRL: control your media player with your face.",
         install_requires=REQUIREMENTS,
+        python_requires=">=3.7",
         license="Mozilla Public License Version 2.0",
         long_description=README,
         long_description_content_type="text/markdown",

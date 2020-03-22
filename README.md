@@ -17,7 +17,7 @@ FaceCTRL takes control of your webcam as soon as you open your media player, and
 
 - A webcam
 - [Playerctl](https://github.com/altdesktop/playerctl) installed (`pacman -S playerctl` on Archlinux)
-- Python 3.6
+- Python >= 3.7
 - OpenCV is not required to be installed system-wise, but it is recommended. The python package of OpenCV doesn't contain the pre-trained models for face localization (XML files) and you have to download them from the [OpenCV repository](https://github.com/opencv/opencv/). OpenCV installed system-wise, instead, usually ships them in the `/usr/share/opencv4/haarcascades/` folder.
 
 ### Installation

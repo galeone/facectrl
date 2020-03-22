@@ -1,6 +1,6 @@
 # FaceCTRL: control your media player with your face
 
-After being interrupted dozens of times a day while I was coding and listening to my favorite music, I decided to find a solution that eliminates the stress of pausing and re-playing the song I was listening to.
+After being interrupted dozens of times a day while coding with my headphones on, I decided to find a solution that eliminates the stress of pausing and re-playing the song I was listening to.
 
 The idea is trivial:
 

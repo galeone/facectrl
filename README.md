@@ -57,6 +57,7 @@ Follow the instructions displayed in the terminal.
 
 **Hint**: move in front of the camera until you see your face in a window with an increasing number on the bottom right corner. Your face is now being tracked, thus try to acquire as many images as possible with different appearances. Acquire at least 1000 images with headphones on and 1000 images with headphones off.
 
+**Hint²**: you can execute this script as many times you want, the new images are added to the dataset. Thus, repeat the dataset creation phase with natural light, artificial light, and different light conditions if possible.
 
 If you want to share your dataset, please, open an issue! In this way, we can reach the goal of shipping a well-trained model together with FaceCTRL.
 

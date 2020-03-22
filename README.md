@@ -1,7 +1,6 @@
 # FaceCTRL: control your media player with your face
----
 
-After being interrupted dozens of times a day while I was coding and listening to my favorite music, I decided to create this software.
+After being interrupted dozens of times a day while I was coding and listening to my favorite music, I decided to find a solution that eliminates the stress of stopping and re-starting the music.
 
 The idea is trivial:
 

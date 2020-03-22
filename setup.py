@@ -4,7 +4,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-"""Facectrl: control your mediaplayer with your face."""
+"""Facectrl: control your media player with your face."""
 
 import re
 
@@ -24,7 +24,7 @@ if __name__ == "__main__":
     setup(
         author=METADATA["author"],
         author_email=METADATA["email"],
-        description="facectrl: control your mediaplayer with your face.",
+        description="facectrl: control your media player with your face.",
         install_requires=REQUIREMENTS,
         license="Mozilla Public License Version 2.0",
         long_description=README,

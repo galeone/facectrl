@@ -11,6 +11,25 @@ The idea is trivial:
 
 However, the manual control of your player is still possible. If you decide to pause the music while you're still in front of your PC with your headphones on, the control of the media player is transferred to the player itself. To give back the control to playerctrl, just walk away from your PC (or hide the image captured from your webcam using a finger, for some second).
 
+## Requirements
+
+- A webcam
+- [Playerctl](https://github.com/altdesktop/playerctl) installed (`pacman -S playerctl` on Archlinux)
+- Python 3.6
+- OpenCV is not required to be installed system-wise, but it is recommended. The python package of OpenCV doesn't contain the pre-trained models for face localization (XML files) and you have to download them from the [OpenCV repository](https://github.com/opencv/opencv/). OpenCV installed system-wise, instead, usually ships them in the `/usr/share/opencv4/haarcascades/` folder.
+
+### Installation
+
+If you just want to use this tool without making any change, you use pip:
+
+```
+pip install --upgrade facectrl
+```
+
+Please note that this software is still alpha software.
+
+For **development**: clone the repository and just `pip install -e .`
+
 ## Usage
 
 The project does not ship a pre-trained model; you have to train a model by yourself and use it.

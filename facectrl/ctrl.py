@@ -9,9 +9,9 @@
 import json
 import logging
 import sys
-import threading
 from argparse import ArgumentParser
 from pathlib import Path
+from threading import Thread
 from time import sleep, time
 from typing import Tuple
 
@@ -148,7 +148,10 @@ class Controller:
         self._player.connect("playback-status::paused", self._on_pause)
         self._player.connect("playback-status::stopped", self._on_stop)
         self._manager.manage_player(self._player)
-        self._start()
+        if self._debug:
+            self._start()
+        else:
+            Thread(target=self._start).start()
 
     def _on_play(self, player, status) -> None:
         logging.info("ON PLAY")

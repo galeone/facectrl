@@ -9,7 +9,7 @@ The idea is trivial:
 - You walk away from your PC: the music pause.
 - You come back to your PC, and you put the headphones on: the music plays again.
 
-However, the manual control of your player is still possible. If you decide to pause the music while in front of your PC
+However, the manual control of your player is still possible. If you decide to pause the music while you're still in front of your PC with your headphones on, the control of the media player is transferred to the player itself. To give back the control to playerctrl, just walk away from your PC (or hide the image captured from your webcam using a finger, for some second).
 
 ## Usage
 

@@ -1,6 +1,6 @@
 # FaceCTRL: control your media player with your face
 
-After being interrupted dozens of times a day while I was coding and listening to my favorite music, I decided to find a solution that eliminates the stress of stopping and re-starting the music.
+After being interrupted dozens of times a day while I was coding and listening to my favorite music, I decided to find a solution that eliminates the stress of pausing and re-playing the song I was listening to.
 
 The idea is trivial:
 
@@ -12,6 +12,8 @@ The idea is trivial:
 However, the manual control of your player is still possible. If you decide to pause the music while you're still in front of your PC with your headphones on, the control of the media player is transferred to the player itself. To give back the control to playerctrl, just walk away from your PC (or hide the image captured from your webcam using a finger, for some second).
 
 FaceCTRL takes control of your webcam as soon as you open your media player, and releases it when you close the player.
+
+**Demonstration video**: https://www.youtube.com/watch?v=48N4IU5XB6c
 
 ## Requirements
 

@@ -345,6 +345,7 @@ class DatasetBuilder:
                 tf.image.random_jpeg_quality(
                     image, min_jpeg_quality=20, max_jpeg_quality=100
                 ),
+                tf.image.random_crop(image, size=(64, 64, 1)),
             ]
         )
 
@@ -376,9 +377,10 @@ class DatasetBuilder:
         if take != -1:
             dataset = dataset.take(take)
 
-        dataset = dataset.shuffle(4 * len(glob(str(glob_path))))
         if augmentation:
             dataset = dataset.map(self.augment).unbatch()
+            # 4 because augment increase the dataset size by 4
+            dataset = dataset.shuffle(5 * len(glob(str(glob_path))))
         if use_label != -1:
             label = use_label
             dataset = dataset.map(lambda image: (image, label))
@@ -443,7 +445,9 @@ def train(
             training_datasets["on"]
             .unbatch()
             .concatenate(training_datasets["off"].unbatch())
-            .shuffle(4 * len(glob(str(dataset_path / "on" / "*.png"))))
+            # 5 because the training dataset is augmented and the dataset size
+            # itself increased by a factor of 5
+            .shuffle(5 * len(glob(str(dataset_path / "on" / "*.png"))))
             .batch(batch_size)
             .prefetch(1)
         )

@@ -11,6 +11,8 @@ The idea is trivial:
 
 However, the manual control of your player is still possible. If you decide to pause the music while you're still in front of your PC with your headphones on, the control of the media player is transferred to the player itself. To give back the control to playerctrl, just walk away from your PC (or hide the image captured from your webcam using a finger, for some second).
 
+FaceCTRL takes control of your webcam as soon as you open your media player, and releases it when you close the player.
+
 ## Requirements
 
 - A webcam
@@ -56,7 +58,7 @@ Follow the instructions displayed in the terminal.
 **Hint**: move in front of the camera until you see your face in a window with an increasing number on the bottom right corner. Your face is now being tracked, thus try to acquire as many images as possible with different appearances. Acquire at least 1000 images with headphones on and 1000 images with headphones off.
 
 
-If you want to share your dataset, please, open an issue! In this way, we can reach the goal of shipping a well-trained model together with facectrl.
+If you want to share your dataset, please, open an issue! In this way, we can reach the goal of shipping a well-trained model together with FaceCTRL.
 
 ### Training
 

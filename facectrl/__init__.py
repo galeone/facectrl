@@ -4,13 +4,13 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-"""Facectrl packagee."""
+"""FaceCTRL package."""
 
 from better_setuptools_git_version import get_version
 
-from . import ctrl, dataset, detector, ml, video
+from facectrl import ctrl, dataset, ml, video
 
 __version__ = get_version()
 __url__ = "https://github.com/galeone/facectrl"
 __author__ = "Paolo Galeone"
-__email__ = "nessuno@nerdz.eu"
+__email__ = "me@pgaleone.eu"

@@ -157,7 +157,6 @@ class AEAccuracy(ashpy.metrics.Metric):
             self._positive_dataset.unbatch()
             .map(self._positive)
             .concatenate(self._negative_dataset.unbatch().map(self._negative))
-            .shuffle(2000)
             .batch(batch_size)
         )
 
@@ -377,8 +376,8 @@ class DatasetBuilder:
         if take != -1:
             dataset = dataset.take(take)
 
+        dataset = dataset.shuffle(4 * len(glob(str(glob_path))))
         if augmentation:
-            dataset = dataset.shuffle(2 * len(glob(str(glob_path))))
             dataset = dataset.map(self.augment).unbatch()
         if use_label != -1:
             label = use_label
@@ -440,12 +439,11 @@ def train(
         ]
         best_path = logdir / "on" / "best" / "binary_accuracy"
         best_json = "binary_accuracy.json"
-
         training_dataset = (
             training_datasets["on"]
             .unbatch()
             .concatenate(training_datasets["off"].unbatch())
-            .shuffle(2 * len(glob(str(dataset_path / "on" / "*.png"))))
+            .shuffle(4 * len(glob(str(dataset_path / "on" / "*.png"))))
             .batch(batch_size)
             .prefetch(1)
         )
@@ -454,7 +452,6 @@ def train(
             validation_datasets["on"]
             .unbatch()
             .concatenate(validation_datasets["off"].unbatch())
-            .shuffle(2 * len(glob(str(dataset_path / "on" / "*.png"))))
             .batch(batch_size)
             .prefetch(1)
         )
